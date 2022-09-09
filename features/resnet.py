@@ -129,7 +129,7 @@ class BasicBlockFilm(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, block, layers, bn_fn, initial_pool=True, conv1_kernel_size=7):
+    def __init__(self, block, layers, bn_fn, initial_pool=True, conv1_kernel_size=5):
         super(ResNet, self).__init__()
         self.initial_pool = initial_pool # False for 84x84
         self.inplanes = self.curr_planes = 64
