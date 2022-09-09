@@ -91,10 +91,11 @@ class TrainEvaluator(Evaluator):
         return mean_stats
 
 class TestEvaluator(Evaluator):
-    def __init__(self, stats_to_compute, save_dir = None):
+    def __init__(self, stats_to_compute, save_dir = None, save_file = "results.json"):
         super().__init__(stats_to_compute)
         if save_dir:
             self.save_dir = save_dir
+        self.save_file = save_file
         self.reset()
 
     def save(self):
@@ -124,7 +125,7 @@ class TestEvaluator(Evaluator):
                     assert frame_id == i+1 # frames must be sorted
                     output[user_id]['user_videos'][video_id].append(pred)
 
-        self.json_results_path = Path(self.save_dir, "results.json")
+        self.json_results_path = Path(self.save_dir, self.save_file)
         self.json_results_path.parent.mkdir(exist_ok=True, parents=True)
         with open(self.json_results_path, 'w') as json_file:
             json.dump(output, json_file)

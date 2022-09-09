@@ -44,6 +44,8 @@ from utils.data import get_clip_loader, unpack_task, attach_frame_history, proce
 from utils.logging import print_and_log, get_log_files, stats_to_str
 from utils.eval_metrics import TrainEvaluator, ValidationEvaluator, TestEvaluator
 
+import metaloo
+
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 def main():
@@ -329,10 +331,12 @@ class Learner:
         self.model.load_state_dict(torch.load(path, map_location=self.map_location))
         self.model.set_test_mode(True)
         self.ops_counter.set_base_params(self.model)
+        reduced_evaluator = TestEvaluator(self.evaluation_metrics, self.checkpoint_dir, save_file="reduced_results.json")
 
         with torch.no_grad():
             # loop through test tasks (num_test_users * num_test_tasks_per_user)
             num_test_tasks = self.test_queue.num_users * self.args.test_tasks_per_user
+            # How are user tasks defined? Surely they must range over multiple classes/videos or else evaluating on the whole test set doesn't make sense
             for step, task_dict in enumerate(self.test_queue.get_tasks()):
                 context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, preload_clips=self.args.preload_clips)
                 context_noise = process_annotations_dict(task_dict['context_annotations']) #Get 'ground truth' of whether context points are noisy
@@ -352,7 +356,22 @@ class Learner:
                     video_clips = attach_frame_history(video_frames, self.args.clip_length)
                     video_logits = self.model.predict(video_clips)
                     self.test_evaluator.append_video(video_logits, video_label, video_paths, object_list)
-
+                    
+                # calculate loo weights
+                weights = metaloo.calculate_loo(model, context_clips, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list, self.ops_counter, self.args.clip_length)
+                # use these weights to do something
+                keep_indices, drop_indices = metaloo.drop_worst(weights, self.args.drop_rate, self.args.spread_constraint, self.args.class_labels)
+                
+                reduced_context_clips, reduced_context_labels = context_clips[keep_indices], context_labels[keep_indices]
+                self.model.personable(reduced_context_clips, reduced_context_labels, ops_counter=self.ops_counter)
+                
+                # loop through cached target videos for the current task, now using pared down context set base on metaloo outcome
+                for video_frames, video_paths, video_label in zip(cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video):
+                    video_clips = attach_frame_history(video_frames, self.args.clip_length)
+                    video_logits = self.model.predict(video_clips)
+                    reduced_evaluator.append_video(video_logits, video_label, video_paths, object_list)
+                
+                # TODO: should we be resetting between each call?
                 # reset task's params
                 self.model._reset()
                 # add task's ops to self.ops_counter
@@ -360,17 +379,29 @@ class Learner:
 
                 # if this is the user's last task, get the average performance for the user
                 if (step+1) % self.args.test_tasks_per_user == 0:
-                    _, current_user_stats = self.test_evaluator.get_mean_stats(current_user=True)
-                    print_and_log(self.logfile, f'{self.args.test_set} user {task_dict["user_id"]} ({self.test_evaluator.current_user+1}/{self.test_queue.num_users}) stats: {stats_to_str(current_user_stats)}')
+                    self.print_current_user_stats(self.test_evaluator) # Save out clean stats using default test evaluator
+                    self.print_current_user_stats(reduced_evaluator) # Save out stats when training using reduced context set
+                    # Notify evaluators that we're moving to next user
                     if (step+1) < num_test_tasks:
                         self.test_evaluator.next_user()
+                        reduced_evaluator.next_user()
+                        
+        self.save_and_reset_stats(self.test_evaluator)
+        self.save_and_reset_stats(reduced_evaluator)
 
-            stats_per_user, stats_per_video = self.test_evaluator.get_mean_stats()
-            stats_per_user_str, stats_per_video_str = stats_to_str(stats_per_user), stats_to_str(stats_per_video)
-            mean_ops_stats = self.ops_counter.get_mean_stats()
-            print_and_log(self.logfile, f'{self.args.test_set} [{path}]\n per-user stats: {stats_per_user_str}\n per-video stats: {stats_per_video_str}\n model stats: {mean_ops_stats}\n')
-            self.test_evaluator.save()
-            self.test_evaluator.reset()
+            
+    def print_current_user_stats(self, evaluator, descriptor=""):
+        _, current_user_stats = evaluator.get_mean_stats(current_user=True)
+        print_and_log(self.logfile, f'{self.args.test_set} user {task_dict["user_id"]} ({evaluator.current_user+1}/{self.test_queue.num_users})  {descriptor} stats: {stats_to_str(current_user_stats)}')
+
+    def save_and_reset_stats(self, evaluator, descriptor=""):
+        stats_per_user, stats_per_video = evaluator.get_mean_stats()
+        stats_per_user_str, stats_per_video_str = stats_to_str(stats_per_user), stats_to_str(stats_per_video)
+        mean_ops_stats = self.ops_counter.get_mean_stats()
+        print_and_log(self.logfile, f'{descriptor} stats\n')
+        print_and_log(self.logfile, f'{self.args.test_set} [{path}]\n per-user stats: {stats_per_user_str}\n per-video stats: {stats_per_video_str}\n model stats: {mean_ops_stats}\n')
+        evaluator.save()
+        evaluator.reset()
 
     def save_checkpoint(self, epoch):
         torch.save({
