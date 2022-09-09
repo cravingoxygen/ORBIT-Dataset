@@ -40,7 +40,7 @@ from models.few_shot_recognisers import SingleStepFewShotRecogniser
 from utils.args import parse_args
 from utils.ops_counter import OpsCounter
 from utils.optim import cross_entropy, init_optimizer
-from utils.data import get_clip_loader, unpack_task, attach_frame_history
+from utils.data import get_clip_loader, unpack_task, attach_frame_history, process_annotations_dict
 from utils.logging import print_and_log, get_log_files, stats_to_str
 from utils.eval_metrics import TrainEvaluator, ValidationEvaluator, TestEvaluator
 
@@ -181,7 +181,10 @@ class Learner:
             self.test(self.checkpoint_path_validation)
 
         if self.args.mode == 'test':
-            self.test(self.args.model_path)
+            if self.args.task_type == 'noisy_shots':
+                self.detect_noisy_shots(self.args.model_path)
+            else:
+                self.test(self.args.model_path)
 
         self.logfile.close()
 
@@ -313,6 +316,55 @@ class Learner:
                     if (step+1) < num_test_tasks:
                         self.test_evaluator.next_user()
                     
+            stats_per_user, stats_per_video = self.test_evaluator.get_mean_stats()
+            stats_per_user_str, stats_per_video_str = stats_to_str(stats_per_user), stats_to_str(stats_per_video)
+            mean_ops_stats = self.ops_counter.get_mean_stats()
+            print_and_log(self.logfile, f'{self.args.test_set} [{path}]\n per-user stats: {stats_per_user_str}\n per-video stats: {stats_per_video_str}\n model stats: {mean_ops_stats}\n')
+            self.test_evaluator.save()
+            self.test_evaluator.reset()
+
+    def detect_noisy_shots(self, path):
+        
+        self.init_model()
+        self.model.load_state_dict(torch.load(path, map_location=self.map_location))
+        self.model.set_test_mode(True)
+        self.ops_counter.set_base_params(self.model)
+
+        with torch.no_grad():
+            # loop through test tasks (num_test_users * num_test_tasks_per_user)
+            num_test_tasks = self.test_queue.num_users * self.args.test_tasks_per_user
+            for step, task_dict in enumerate(self.test_queue.get_tasks()):
+                context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, preload_clips=self.args.preload_clips)
+                context_noise = process_annotations_dict(task_dict['context_annotations']) #Get 'ground truth' of whether context points are noisy
+                import pdb; pdb.set_trace()
+
+                # if this is a user's first task, cache their target videos (as they remain constant for all their tasks - ie. num_test_tasks_per_user)
+                if step % self.args.test_tasks_per_user == 0:
+                    cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video = target_frames_by_video, target_paths_by_video, target_labels_by_video
+
+                # dummy warm-up to get correct timing
+                self.model.personalise(context_clips, context_labels, ops_counter=False)
+                torch.cuda.synchronize()
+                self.model.personalise(context_clips, context_labels, ops_counter=self.ops_counter)
+
+                # loop through cached target videos for the current task
+                for video_frames, video_paths, video_label in zip(cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video):
+                    video_clips = attach_frame_history(video_frames, self.args.clip_length)
+                    video_logits = self.model.predict(video_clips)
+                    self.test_evaluator.append_video(video_logits, video_label, video_paths, object_list)
+
+                # reset task's params
+                self.model._reset()
+                # add task's ops to self.ops_counter
+                self.ops_counter.task_complete()
+
+                # if this is the user's last task, get the average performance for the user
+                if (step+1) % self.args.test_tasks_per_user == 0:
+                    _, current_user_stats = self.test_evaluator.get_mean_stats(current_user=True)
+                    print_and_log(self.logfile, f'{self.args.test_set} user {task_dict["user_id"]} ({self.test_evaluator.current_user+1}/{self.test_queue.num_users}) stats: {stats_to_str(current_user_stats)}')
+                    if (step+1) < num_test_tasks:
+                        self.test_evaluator.next_user()
+
             stats_per_user, stats_per_video = self.test_evaluator.get_mean_stats()
             stats_per_user_str, stats_per_video_str = stats_to_str(stats_per_user), stats_to_str(stats_per_video)
             mean_ops_stats = self.ops_counter.get_mean_stats()

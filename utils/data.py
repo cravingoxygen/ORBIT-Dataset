@@ -131,3 +131,14 @@ def unpack_task(task_dict, device, context_to_device=True, target_to_device=Fals
         return context_clips, context_paths, context_labels, target_clips, target_paths, target_labels, object_list
     else:
         return context_paths, context_paths, context_labels, target_paths, target_paths, target_labels, object_list
+
+def process_annotations_dict(annotations_dict):
+    noise_tensor = None
+    for key in annotations_dict.keys():
+        not_nan_annotation = torch.nan_to_num(annotations_dict[key], nan=0.0)
+        if noise_tensor is None:
+            noise_tensor = not_nan_annotation
+        else:
+            noise_tensor += not_nan_annotation
+    return noise_tensor
+

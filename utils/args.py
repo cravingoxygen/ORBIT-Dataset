@@ -37,6 +37,11 @@ def parse_args(learner='default'):
     parser.add_argument("--batch_normalisation", choices=["basic",  "task_norm"], default="basic", 
                         help="Normalisation layer to use (default: basic).")
 
+    # task parameters
+    parser.add_argument("--task_type", type=str, default="noisy_shots", choices=["noisy_shots", "none"],
+                        help="What LOO task we're doing (always in test mode)")
+
+
     # data parameters
     parser.add_argument("--train_way_method", type=str, default="random", choices=["random", "max"],
                         help="Method to sample classes for a train task (default: random).")
