@@ -40,6 +40,9 @@ def parse_args(learner='default'):
     # task parameters
     parser.add_argument("--task_type", type=str, default="noisy_shots", choices=["noisy_shots", "none"],
                         help="What LOO task we're doing (always in test mode)")
+    parser.add_argument("--spread_constraint", choices=["by_class", "nonempty", "none"], default="none",
+                        help="Spread coresets over classes (by_class) or by not allowing it to drop the last instance of a class (nonempty) or no constraint (none)")
+    parser.add_argument("--drop_rate", type=float, default=0.1, help="Percentage of points to drop (as float in [0,1])")
 
 
     # data parameters

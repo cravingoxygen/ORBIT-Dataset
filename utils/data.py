@@ -111,10 +111,11 @@ def attach_frame_history_tensor(frames, history_length):
         return frames_with_history
 
 def unpack_task(task_dict, device, context_to_device=True, target_to_device=False, preload_clips=False):
-   
-    context_clips = task_dict['context_clips']
-    context_paths = task_dict['context_paths']
-    context_labels = task_dict['context_labels']
+    #import pdb; pdb.set_trace()
+    #max_context = 17
+    context_clips = task_dict['context_clips']#[0:max_context]
+    context_paths = task_dict['context_paths']#[0:max_context]
+    context_labels = task_dict['context_labels']#[0:max_context]
     context_annotations = task_dict['context_annotations']
     target_clips = task_dict['target_clips']
     target_paths = task_dict['target_paths']
