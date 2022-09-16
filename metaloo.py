@@ -1,13 +1,14 @@
+import torch
 import numpy as np
 from utils.data import attach_frame_history
 from utils.optim import cross_entropy
 
 
 def calculate_loo(model, context_clips, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list, ops_counter, clip_length):
-    import pdb; pdb.set_trace()
     context_classes = context_labels.unique()
     num_videos = len(target_labels_by_video)
     loss_per_video = torch.zeros((len(context_labels), num_videos))
+    '''
     with torch.no_grad():
         for i in range(context_clips.shape[0]):
             if i == 0:
@@ -18,7 +19,7 @@ def calculate_loo(model, context_clips, context_labels, target_frames_by_video, 
                 context_labels_loo = torch.cat((context_labels[0:i], context_labels[i + 1:]), 0)
                 
             # Handle the case where we're dropping the only instance of a class by heavy penalty
-            if len(context_labels_loo.unique()) < context_classes:
+            if len(context_labels_loo.unique()) < len(context_classes):
                 for v in range(num_videos):
                     loss_per_video[i][v] = 1000
                 continue
@@ -28,13 +29,16 @@ def calculate_loo(model, context_clips, context_labels, target_frames_by_video, 
             
             # evaluate model (on all videos)
             # TODO: Maybe only evaluate on some? Or on some frames from each?
-            for video_frames, video_paths, video_label in zip(target_frames_by_video, target_paths_by_video, target_labels_by_video):
+            for v, video_frames, video_paths, video_label in zip(range(num_videos), target_frames_by_video, target_paths_by_video, target_labels_by_video):
                 video_clips = attach_frame_history(video_frames, clip_length)
                 video_logits = model.predict(video_clips)
                 # What to do with these logits
                 loss_per_video[i][v] = calculate_loss(video_logits, video_label, video_paths, object_list)
-                
+            print(f'Loss per video {i} : {loss_per_video[i]}')
     weights = loss_per_video.sum(dim=0)
+    '''
+    weights = torch.from_numpy(np.random.random(len(context_labels)))
+
     return weights
 
 def calculate_loss(frame_logits, video_label, frame_paths, object_list):
@@ -44,14 +48,25 @@ def calculate_loss(frame_logits, video_label, frame_paths, object_list):
     frame_logits = frame_logits[unique_idxs]
 
     assert frame_paths.shape[0] == frame_logits.shape[0]
-    return cross_entropy(frame_logits, video_label) # Might need a repeat here
+    # repeat this video's label for all frames in video
+    video_labels = video_label.repeat_interleave(frame_logits.shape[0]).cuda()
+    return cross_entropy(frame_logits, video_labels)
     #frame_predictions = frame_logits.argmax(dim=-1).detach().cpu().numpy()
     #video_label = video_label.clone().cpu().numpy()
  
  
- def drop_worst(weights, drop_rate, spread_constraint=None, class_labels=None):
-    num_to_keep = int(len(weights) * (1 - drop_rate))
+def drop_worst(weights, drop_rate=None, num_to_drop=None, spread_constraint=None, class_labels=None):
+    assert drop_rate != None or num_to_drop != None
+    if drop_rate != None:
+        num_to_keep = int(len(weights) * (1 - drop_rate))
+    else:
+        num_to_keep = max(0, len(weights) - num_to_drop)
+
     ranking = torch.argsort(weights, descending=True)
+
+    if num_to_keep == 0:
+        return [], ranking
+
     if spread_constraint == None or spread_constraint == "none":
         return ranking[0:num_to_keep], ranking[num_to_keep:]
         
@@ -67,8 +82,6 @@ def calculate_loss(frame_logits, video_label, frame_paths, object_list):
         total_num_classes = len(class_labels.unique())
         num_represented_classes = len(class_labels[ranking[keep_mask]].unique())
         while num_represented_classes != total_num_classes:
-            import pdb; pdb.set_trace()
-
             # We shouldn't reach the end of the loop as long as the way/shot setup makes sense
             keep_mask[drop_index] = True
             drop_index -= 1
@@ -91,7 +104,7 @@ def select_top_k(number, weights, spread_constraint, class_labels=None):
         return candidate_indices.flatten()
     elif spread_constraint == "none":
         ranking = torch.argsort(weights, descending=True)
-        return ranking[0:number]
+        return ranking[0:number], ranking[number:]
     elif spread_constraint == "nonempty":
         print("By class spread constraint not yet supported when selecting by dropping x")
         return None

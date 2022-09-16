@@ -331,16 +331,17 @@ class Learner:
         self.model.load_state_dict(torch.load(path, map_location=self.map_location))
         self.model.set_test_mode(True)
         self.ops_counter.set_base_params(self.model)
+        perc_overlaps = []
         reduced_evaluator = TestEvaluator(self.evaluation_metrics, self.checkpoint_dir, save_file="reduced_results.json")
-
+        average_noisy_context_points = 0
         with torch.no_grad():
             # loop through test tasks (num_test_users * num_test_tasks_per_user)
             num_test_tasks = self.test_queue.num_users * self.args.test_tasks_per_user
             # How are user tasks defined? Surely they must range over multiple classes/videos or else evaluating on the whole test set doesn't make sense
             for step, task_dict in enumerate(self.test_queue.get_tasks()):
                 context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, preload_clips=self.args.preload_clips)
-                context_noise = process_annotations_dict(task_dict['context_annotations']) #Get 'ground truth' of whether context points are noisy
-                import pdb; pdb.set_trace()
+                context_noise = process_annotations_dict(task_dict['context_annotations']).squeeze() #Get 'ground truth' of whether context points are noisy
+                average_noisy_context_points += len(context_noise[context_noise>0])/len(context_noise)
 
                 # if this is a user's first task, cache their target videos (as they remain constant for all their tasks - ie. num_test_tasks_per_user)
                 if step % self.args.test_tasks_per_user == 0:
@@ -358,12 +359,18 @@ class Learner:
                     self.test_evaluator.append_video(video_logits, video_label, video_paths, object_list)
                     
                 # calculate loo weights
-                weights = metaloo.calculate_loo(model, context_clips, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list, self.ops_counter, self.args.clip_length)
+                weights = metaloo.calculate_loo(self.model, context_clips, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list, self.ops_counter, self.args.clip_length)
                 # use these weights to do something
-                keep_indices, drop_indices = metaloo.drop_worst(weights, self.args.drop_rate, self.args.spread_constraint, self.args.class_labels)
-                
+                keep_indices, drop_indices = metaloo.drop_worst(weights, drop_rate=self.args.drop_rate, spread_constraint=self.args.spread_constraint, class_labels=context_labels)
+                #import pdb; pdb.set_trace()
+                # Remove any indices that aren't actually noisy
+                annotation_keep_indices, annotation_drop_indices = metaloo.drop_worst(-(context_noise[context_noise > 0]), spread_constraint=self.args.spread_constraint, class_labels=context_labels, num_to_drop=len(drop_indices))
+                overlap_set = set(annotation_drop_indices.tolist()).intersection(set(drop_indices.tolist()))
+                percentage_correctly_noisy = 100*len(overlap_set)/len(keep_indices)
+                perc_overlaps.append(percentage_correctly_noisy)
+
                 reduced_context_clips, reduced_context_labels = context_clips[keep_indices], context_labels[keep_indices]
-                self.model.personable(reduced_context_clips, reduced_context_labels, ops_counter=self.ops_counter)
+                self.model.personalise(reduced_context_clips, reduced_context_labels, ops_counter=self.ops_counter)
                 
                 # loop through cached target videos for the current task, now using pared down context set base on metaloo outcome
                 for video_frames, video_paths, video_label in zip(cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video):
@@ -379,22 +386,25 @@ class Learner:
 
                 # if this is the user's last task, get the average performance for the user
                 if (step+1) % self.args.test_tasks_per_user == 0:
-                    self.print_current_user_stats(self.test_evaluator) # Save out clean stats using default test evaluator
-                    self.print_current_user_stats(reduced_evaluator) # Save out stats when training using reduced context set
+                    self.print_current_user_stats(self.test_evaluator, task_dict["user_id"], descriptor="full") # Save out clean stats using default test evaluator
+                    self.print_current_user_stats(reduced_evaluator, task_dict["user_id"], descriptor="reduced") # Save out stats when training using reduced context set
                     # Notify evaluators that we're moving to next user
                     if (step+1) < num_test_tasks:
                         self.test_evaluator.next_user()
                         reduced_evaluator.next_user()
                         
-        self.save_and_reset_stats(self.test_evaluator)
-        self.save_and_reset_stats(reduced_evaluator)
+        print_and_log(self.logfile, "Average number of noisy context frames per task: {}".format(average_noisy_context_points/num_test_tasks))
+        perc_overlaps_np = np.array(perc_overlaps)
+        print_and_log(self.logfile, "Average percentage overlap of most noisy context points and select drop points (per task): {} +/- {}".format(perc_overlaps_np.mean(), perc_overlaps_np.std()))
+        self.save_and_reset_stats(self.test_evaluator, path, descriptor="full")
+        self.save_and_reset_stats(reduced_evaluator, path, descriptor="reduced")
 
             
-    def print_current_user_stats(self, evaluator, descriptor=""):
+    def print_current_user_stats(self, evaluator, user_id, descriptor=""):
         _, current_user_stats = evaluator.get_mean_stats(current_user=True)
-        print_and_log(self.logfile, f'{self.args.test_set} user {task_dict["user_id"]} ({evaluator.current_user+1}/{self.test_queue.num_users})  {descriptor} stats: {stats_to_str(current_user_stats)}')
+        print_and_log(self.logfile, f'{self.args.test_set} user {user_id} ({evaluator.current_user+1}/{self.test_queue.num_users})  {descriptor} stats: {stats_to_str(current_user_stats)}')
 
-    def save_and_reset_stats(self, evaluator, descriptor=""):
+    def save_and_reset_stats(self, evaluator, path, descriptor=""):
         stats_per_user, stats_per_video = evaluator.get_mean_stats()
         stats_per_user_str, stats_per_video_str = stats_to_str(stats_per_user), stats_to_str(stats_per_video)
         mean_ops_stats = self.ops_counter.get_mean_stats()
