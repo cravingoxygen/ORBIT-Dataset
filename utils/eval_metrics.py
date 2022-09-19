@@ -98,7 +98,7 @@ class TestEvaluator(Evaluator):
         self.save_file = save_file
         self.reset()
 
-    def save(self):
+    def save(self, enforce_sequential_frames=True):
         output = {}
         num_users = self.current_user+1
         assert len(self.user_object_lists) == num_users
@@ -122,7 +122,10 @@ class TestEvaluator(Evaluator):
 
                 for i, (path, pred) in enumerate(zip(video_frame_paths, video_frame_predictions)): # loop through frames
                     frame_id = int(Path(path).stem.split('-')[-1])
-                    assert frame_id == i+1 # frames must be sorted
+                    # If some frames have been removed from the video (eg. because object not in frame)
+                    # don't enforce sequential frames if not requested
+                    if enforce_sequential_frames:
+                        assert frame_id == i+1 # frames must be sorted
                     output[user_id]['user_videos'][video_id].append(pred)
 
         self.json_results_path = Path(self.save_dir, self.save_file)
@@ -180,7 +183,6 @@ class TestEvaluator(Evaluator):
         self.all_frame_paths.append([])
 
     def append_video(self, frame_logits, video_label, frame_paths, object_list):
-
         # remove any duplicate frames added due to padding to a multiple of clip_length
         frame_paths, unique_idxs = np.unique(frame_paths, return_index=True)
         frame_logits = frame_logits[unique_idxs]
