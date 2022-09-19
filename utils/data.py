@@ -110,8 +110,7 @@ def attach_frame_history_tensor(frames, history_length):
     else:
         return frames_with_history
 
-def unpack_task(task_dict, device, context_to_device=True, target_to_device=False, preload_clips=False):
-    #import pdb; pdb.set_trace()
+def unpack_task(task_dict, device, context_to_device=True, target_to_device=False, preload_clips=False, remove_target_frames_without_object=False):
     #max_context = 17
     context_clips = task_dict['context_clips']#[0:max_context]
     context_paths = task_dict['context_paths']#[0:max_context]
@@ -127,6 +126,17 @@ def unpack_task(task_dict, device, context_to_device=True, target_to_device=Fals
         context_labels = context_labels.to(device)
     if target_to_device and isinstance(target_labels, torch.Tensor):
         target_labels = target_labels.to(device)
+
+    # Remove frames from the target set if they're annotated as not having the target object in frame
+    if remove_target_frames_without_object:
+        num_videos = len(target_clips)
+        for v in range(num_videos):
+            target_annotations_per_video = target_annotations[v]
+            assert 'object_not_present_issue' in target_annotations_per_video.keys()
+            object_in_frame_mask = (target_annotations_per_video['object_not_present_issue'] == 0).squeeze()
+            target_clips[v] = target_clips[v][object_in_frame_mask]
+            target_paths[v] = target_paths[v][object_in_frame_mask]
+            # Labels are already just one per video, no need to shorten
   
     if preload_clips:
         return context_clips, context_paths, context_labels, target_clips, target_paths, target_labels, object_list
