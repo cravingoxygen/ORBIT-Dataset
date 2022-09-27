@@ -8,7 +8,6 @@ def calculate_loo(model, context_clips, context_labels, target_frames_by_video, 
     context_classes = context_labels.unique()
     num_videos = len(target_labels_by_video)
     loss_per_video = torch.zeros((len(context_labels), num_videos))
-    '''
     with torch.no_grad():
         for i in range(context_clips.shape[0]):
             if i == 0:
@@ -34,10 +33,13 @@ def calculate_loo(model, context_clips, context_labels, target_frames_by_video, 
                 video_logits = model.predict(video_clips)
                 # What to do with these logits
                 loss_per_video[i][v] = calculate_loss(video_logits, video_label, video_paths, object_list)
-            print(f'Loss per video {i} : {loss_per_video[i]}')
-    weights = loss_per_video.sum(dim=0)
-    '''
-    weights = torch.from_numpy(np.random.random(len(context_labels)))
+            #print(f'Loss per video {i} : {loss_per_video[i]}')
+    weights = loss_per_video.sum(dim=1)
+    if len(weights) != context_clips.shape[0]:
+        import pdb; pdb.set_trace()
+        print("Problem with weights shape")
+
+    #weights = torch.from_numpy(np.random.random(len(context_labels)))
 
     return weights
 
@@ -65,6 +67,7 @@ def drop_worst(weights, drop_rate=None, num_to_drop=None, spread_constraint=None
     ranking = torch.argsort(weights, descending=True)
 
     if num_to_keep == 0:
+        import pdb; pdb.set_trace()
         return [], ranking
 
     if spread_constraint == None or spread_constraint == "none":

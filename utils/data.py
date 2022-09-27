@@ -7,6 +7,7 @@ from PIL import Image
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.functional as tv_F
+from torchvision.utils import save_image
 
 class DatasetFromClipPaths(Dataset):
     def __init__(self, clip_paths, with_labels):
@@ -152,4 +153,30 @@ def process_annotations_dict(annotations_dict):
         else:
             noise_tensor += not_nan_annotation
     return noise_tensor
+
+def sample_noisy_frames(context_clip_paths, annotations_dict, output_dir, context_labels, object_list):
+    
+    for key in annotations_dict.keys():
+        #import pdb; pdb.set_trace()
+        # Handle nan values
+        not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
+        issue_mask = (not_nan_annotations != 0).squeeze() # True where issue exists
+        # Select 10 images that have this issu to save out
+        #issue_frames = context_clips[issue_mask]
+        #issue_frames = issue_frames[0:min(10, len(issue_frames))]
+        issue_paths = context_clip_paths[issue_mask]
+        if issue_paths.size <= 1:
+            continue
+        issue_paths = issue_paths[0:min(10, issue_paths.size)].squeeze()
+        sub_context_labels = context_labels[issue_mask][0:issue_paths.size]
+        for p in range(issue_paths.size):
+            frame_path = issue_paths[p]
+            user = frame_path.split('/')[3]
+            
+            frame = Image.open(frame_path)
+            frame = tv_F.to_tensor(frame)
+            filename = "{}_{}_{}_{}.png".format(user, key, p, object_list[sub_context_labels[p]])
+            
+            # Save them out
+            save_image(frame, output_dir + "/" + filename)
 

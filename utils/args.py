@@ -43,6 +43,11 @@ def parse_args(learner='default'):
     parser.add_argument("--spread_constraint", choices=["by_class", "nonempty", "none"], default="none",
                         help="Spread coresets over classes (by_class) or by not allowing it to drop the last instance of a class (nonempty) or no constraint (none)")
     parser.add_argument("--drop_rate", type=float, default=0.1, help="Percentage of points to drop (as float in [0,1])")
+    parser.add_argument("--importance_calculator", type=str, default="loo_loss", choices=["loo_loss", "random"],
+                        help="What method we're using to calculate importance of a point")
+    parser.add_argument("--fraction_of_target_for_loo", type=float, default=1.0,
+                        help="What fraction of the target set can be used for LOO importance calculations")
+
 
 
     # data parameters

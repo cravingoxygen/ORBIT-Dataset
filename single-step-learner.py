@@ -40,7 +40,7 @@ from models.few_shot_recognisers import SingleStepFewShotRecogniser
 from utils.args import parse_args
 from utils.ops_counter import OpsCounter
 from utils.optim import cross_entropy, init_optimizer
-from utils.data import get_clip_loader, unpack_task, attach_frame_history, process_annotations_dict
+from utils.data import get_clip_loader, unpack_task, attach_frame_history, process_annotations_dict, sample_noisy_frames
 from utils.logging import print_and_log, get_log_files, stats_to_str
 from utils.eval_metrics import TrainEvaluator, ValidationEvaluator, TestEvaluator
 from utils.noise_tracker import NoiseTracker
@@ -332,19 +332,25 @@ class Learner:
         self.model.load_state_dict(torch.load(path, map_location=self.map_location))
         self.model.set_test_mode(True)
         self.ops_counter.set_base_params(self.model)
-        perc_overlaps = []
         reduced_evaluator = TestEvaluator(self.evaluation_metrics, self.checkpoint_dir, save_file="reduced_results.json")
         noise_tracker = NoiseTracker(self.args.annotations_to_load)
-        average_noisy_context_points = 0
+
+        # Make random its own generator to use
+        if self.args.importance_calculator == 'random':
+            rng = np.random.default_rng(12345)
+        else:
+            rng = None
+
         with torch.no_grad():
             # loop through test tasks (num_test_users * num_test_tasks_per_user)
             num_test_tasks = self.test_queue.num_users * self.args.test_tasks_per_user
             # How are user tasks defined? Surely they must range over multiple classes/videos or else evaluating on the whole test set doesn't make sense
             for step, task_dict in enumerate(self.test_queue.get_tasks()):
                 context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, 
-                                                                                                                                                            preload_clips=self.args.preload_clips, remove_target_frames_without_object=True )
+                                                                                                                                                        preload_clips=self.args.preload_clips, remove_target_frames_without_object=True )
+                #sample_noisy_frames(context_clip_paths, task_dict['context_annotations'], self.checkpoint_dir, context_labels, object_list)
+
                 context_noise = process_annotations_dict(task_dict['context_annotations']).squeeze() #Get 'ground truth' of whether context points are noisy
-                average_noisy_context_points += len(context_noise[context_noise>0])/len(context_noise)
 
                 # if this is a user's first task, cache their target videos (as they remain constant for all their tasks - ie. num_test_tasks_per_user)
                 if step % self.args.test_tasks_per_user == 0:
@@ -360,19 +366,19 @@ class Learner:
                     video_clips = attach_frame_history(video_frames, self.args.clip_length)
                     video_logits = self.model.predict(video_clips)
                     self.test_evaluator.append_video(video_logits, video_label, video_paths, object_list)
-                    
-                # calculate loo weights
-                weights = metaloo.calculate_loo(self.model, context_clips, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list, self.ops_counter, self.args.clip_length)
+
+                if self.args.importance_calculator == 'random':
+                    weights = rng.random(len(context_clips))
+                    weights = torch.Tensor(weights)
+                elif self.args.importance_calculator == 'loo_loss':
+                    # calculate loo weights
+                    weights = metaloo.calculate_loo(self.model, context_clips, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video,
+                                                         object_list, self.ops_counter, self.args.clip_length)
                 # use these weights to do something
                 keep_indices, drop_indices = metaloo.drop_worst(weights, drop_rate=self.args.drop_rate, spread_constraint=self.args.spread_constraint, class_labels=context_labels)
-                drop_mask = np.zeros(len(context_clips))
-                drop_mask[drop_indices] = 1
+                drop_mask = np.zeros(len(context_clips), dtype=bool)
+                drop_mask[drop_indices] = True
                 noise_tracker.append_video(task_dict['context_annotations'], drop_mask)
-                # Remove any indices that aren't actually noisy
-                annotation_keep_indices, annotation_drop_indices = metaloo.drop_worst(-(context_noise[context_noise > 0]), spread_constraint=self.args.spread_constraint, class_labels=context_labels, num_to_drop=len(drop_indices))
-                overlap_set = set(annotation_drop_indices.tolist()).intersection(set(drop_indices.tolist()))
-                percentage_correctly_noisy = 100*len(overlap_set)/len(keep_indices)
-                perc_overlaps.append(percentage_correctly_noisy)
 
                 reduced_context_clips, reduced_context_labels = context_clips[keep_indices], context_labels[keep_indices]
                 self.model.personalise(reduced_context_clips, reduced_context_labels, ops_counter=self.ops_counter)
@@ -398,13 +404,15 @@ class Learner:
                         self.test_evaluator.next_user()
                         reduced_evaluator.next_user()
                         noise_tracker.next_user()
-                        
-        print_and_log(self.logfile, "Average number of noisy context frames per task: {}".format(average_noisy_context_points/num_test_tasks))
-        perc_overlaps_np = np.array(perc_overlaps)
-        print_and_log(self.logfile, "Average percentage overlap of most noisy context points and select drop points (per task): {} +/- {}".format(perc_overlaps_np.mean(), perc_overlaps_np.std()))
-        print_and_log(self.logfile, "{}".format(noise_tracker.get_mean_stats()))
+
+        friendly_str, data_dict = noise_tracker.get_summary_stats_str(noise_tracker.get_mean_stats())
+        print_and_log(self.logfile, friendly_str)
         self.save_and_reset_stats(self.test_evaluator, path, descriptor="full")
         self.save_and_reset_stats(reduced_evaluator, path, descriptor="reduced")
+
+        for key in data_dict.keys():
+            self.logfile.write(key + '\n')
+            self.logfile.write(data_dict[key] + '\n')
 
             
     def print_current_user_stats(self, evaluator, user_id, descriptor=""):

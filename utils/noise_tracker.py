@@ -61,7 +61,6 @@ class NoiseTracker():
         # On average for each video, how much of of the video consisted of the annotation type? i.e. had that kind of noise?
         # To match how eval_metrics does it, we're going to average per user, per video 
         # i.e. calculate the stat for each individual video, and then average as we like
-        print("Range over users when printing: {}".format(self.current_user+1))
         frac_noisy_all_users = self.make_empty_issues_dict(count_type="list")
         frac_detected_all_users = self.make_empty_issues_dict(count_type="list")
         user_stats = []
@@ -72,6 +71,9 @@ class NoiseTracker():
                 for annot in self.issue_types:
                     # Fraction of frames with this noise type
                     frac_noisy = self.issues_per_user[user][video][annot]/self.total_frames_per_user[user][video]
+                    if frac_noisy > 1:
+                        import pdb; pdb.set_trace()
+                        print("There are more noisy frames than there are frames?")
                     # Fraction of frames with this noise type that were chosen to be discarded
                     if self.issues_per_user[user][video][annot] == 0:
                         frac_detected = 0
@@ -79,6 +81,10 @@ class NoiseTracker():
                         frac_detected = self.noisy_discarded_per_user[user][video][annot]/self.issues_per_user[user][video][annot]
                     frac_noisy_for_user[annot].append(frac_noisy)
                     frac_detected_for_user[annot].append(frac_detected)
+                    if frac_detected > 1:
+                        import pdb; pdb.set_trace()
+                        print("There are more noisy frames than there are frames?")
+
 
             # We can now average frac_noisy and frac_detecteed over all videos for this user
             user_summary = {}
@@ -89,8 +95,6 @@ class NoiseTracker():
                 frac_detected_all_users[annot].extend(frac_detected_for_user[annot])
             user_stats.append(user_summary)
 
-        import pdb; pdb.set_trace
-
         # We can now average frac_noisy and frac_detected over all users
         summary_stats = {}
         for annot in self.issue_types:
@@ -99,3 +103,48 @@ class NoiseTracker():
         summary_stats['user_stats'] = user_stats
 
         return summary_stats
+
+    def get_summary_stats_str(self, summary_stats):
+        result = ''
+        user_noisy_mean_str = '\t'.join(self.issue_types)+ '\t' # user in row, annot type in column
+        user_detect_mean_str = '\t'.join(self.issue_types) + '\t'
+        user_noisy_conf_str = '\t'.join(self.issue_types) + '\t'# user in row, annot type in column
+        user_detect_conf_str = '\t'.join(self.issue_types) + '\t'
+
+        issue_str = '\t'.join(self.issue_types) + '\n'
+        detect_str = '\t'.join(self.issue_types) + '\n'
+
+
+        # For each user, for each issue type
+        # How many frames had the issue? How many did we detect?
+        for user in range(self.current_user + 1):
+            result += 'test user ({}/{}) \n'.format(user+1, self.current_user+1)
+            user_noisy_mean_str += '\ntest user ({}/{})'.format(user+1, self.current_user+1)
+            user_noisy_conf_str += '\ntest user ({}/{})'.format(user+1, self.current_user+1)
+            user_detect_mean_str += '\ntest user ({}/{})'.format(user+1, self.current_user+1)
+            user_detect_conf_str += '\ntest user ({}/{})'.format(user+1, self.current_user+1)
+
+
+            for issue in summary_stats['user_stats'][user].keys():
+                result += '\t {}: {:.2f} +/- {:.2f} % noisy of which {:.2f} +/- {:.2f}% detected\n'.format(issue, summary_stats['user_stats'][user][issue]['frac_noisy'][0]*100, 
+                        summary_stats['user_stats'][user][issue]['frac_noisy'][1]*100, summary_stats['user_stats'][user][issue]['frac_detected'][0]*100,
+                        summary_stats['user_stats'][user][issue]['frac_detected'][1]*100)
+                user_noisy_mean_str += '\t{:.3f}'.format(summary_stats['user_stats'][user][issue]['frac_noisy'][0]*100)
+                user_noisy_conf_str += '\t{:.3f}'.format(summary_stats['user_stats'][user][issue]['frac_noisy'][1]*100)
+                user_detect_mean_str += '\t{:.3f}'.format(summary_stats['user_stats'][user][issue]['frac_detected'][0]*100)
+                user_detect_conf_str += '\t{:.3f}'.format(summary_stats['user_stats'][user][issue]['frac_detected'][1]*100)
+
+        result += '\n'
+        # For each issue type
+        # How many frames had that issue? How many did we detect?
+        for issue in self.issue_types:
+            issue_str += '{}\t{:.3f}\t{:.3f}'.format(issue, summary_stats[issue]['frac_noisy_all_videos'][0]*100, summary_stats[issue]['frac_noisy_all_videos'][1]*100)
+            detect_str += '{}\t{:.3f}\t{:.3f}'.format(issue, summary_stats[issue]['frac_detected_all_videos'][0]*100, summary_stats[issue]['frac_detected_all_videos'][1]*100)
+            result += '{}: {:.2f} +/- {:.2f} % noisy of which {:.2f} +/- {:.2f} % detected\n'.format(issue, summary_stats[issue]['frac_noisy_all_videos'][0]*100, 
+                        summary_stats[issue]['frac_noisy_all_videos'][1]*100, summary_stats[issue]['frac_detected_all_videos'][0]*100, 
+                        summary_stats[issue]['frac_detected_all_videos'][1]*100)
+
+        return result, {'Noisy Frames Per User (%)': user_noisy_mean_str, 'Noisy Frames Per User (confidence)': user_noisy_conf_str, 
+                        'Detected Frames Per User (%)': user_detect_mean_str, 'Detected Frames Per User (confidence)': user_detect_conf_str,
+                        'Average Noisy Frames (%)': issue_str, 'Average Detected Frames (%)': detect_str}
+
