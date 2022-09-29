@@ -40,7 +40,7 @@ from models.few_shot_recognisers import SingleStepFewShotRecogniser
 from utils.args import parse_args
 from utils.ops_counter import OpsCounter
 from utils.optim import cross_entropy, init_optimizer
-from utils.data import get_clip_loader, unpack_task, attach_frame_history, process_annotations_dict, sample_noisy_frames
+from utils.data import get_clip_loader, unpack_task, attach_frame_history, process_annotations_dict, sample_noisy_frames, save_selected_frames
 from utils.logging import print_and_log, get_log_files, stats_to_str
 from utils.eval_metrics import TrainEvaluator, ValidationEvaluator, TestEvaluator
 from utils.noise_tracker import NoiseTracker
@@ -348,8 +348,6 @@ class Learner:
             for step, task_dict in enumerate(self.test_queue.get_tasks()):
                 context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, 
                                                                                                                                                         preload_clips=self.args.preload_clips, remove_target_frames_without_object=True )
-                #sample_noisy_frames(context_clip_paths, task_dict['context_annotations'], self.checkpoint_dir, context_labels, object_list)
-
                 context_noise = process_annotations_dict(task_dict['context_annotations']).squeeze() #Get 'ground truth' of whether context points are noisy
 
                 # if this is a user's first task, cache their target videos (as they remain constant for all their tasks - ie. num_test_tasks_per_user)
@@ -388,6 +386,11 @@ class Learner:
                     video_clips = attach_frame_history(video_frames, self.args.clip_length)
                     video_logits = self.model.predict(video_clips)
                     reduced_evaluator.append_video(video_logits, video_label, video_paths, object_list)
+
+                # Save out selected (dropped) frames
+                # Save out sample of noisy frames, ideally of most noisy frames (what if there are many?)
+                save_selected_frames(context_clip_paths, task_dict['context_annotations'], context_labels, object_list, self.checkpoint_dir, keep_indices, "keep")
+                save_selected_frames(context_clip_paths, task_dict['context_annotations'], context_labels, object_list, self.checkpoint_dir, drop_indices, "drop")
 
                 # TODO: should we be resetting between each call?
                 # reset task's params

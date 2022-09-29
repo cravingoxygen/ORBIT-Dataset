@@ -3,6 +3,7 @@
 
 import torch
 import numpy as np
+import os
 from PIL import Image
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -154,10 +155,56 @@ def process_annotations_dict(annotations_dict):
             noise_tensor += not_nan_annotation
     return noise_tensor
 
-def sample_noisy_frames(context_clip_paths, annotations_dict, output_dir, context_labels, object_list):
+#keep_indices, "keep")
+
+def save_selected_frames(context_clip_paths, annotations_dict, context_labels, object_list, output_dir, index_list=None, selection_name=""):
+    if selection_name != "":
+        output_path = os.path.join(output_dir, selection_name)
+        if not os.path.exists(output_path):
+            os.mkdir(output_path)
+    else:
+        output_path = output_dir
+    if index_list is None:
+        index_list = torch.tensor(range(len(context_clip_paths)), dtype=torch.int64)
+
+    # Save out the entire selection
+    # object_list[context_labels[index_list]]
+    save_frame_grid(context_clip_paths[index_list].squeeze(axis=1), output_path, "sample")
+
+    # For each noise type, save out all those frames as a grid:
+    for key in annotations_dict.keys():
+        # Handle nan values
+        not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
+        # Preserve the batch dimension, in case there is only image with this noise type
+        not_nan_annotations = not_nan_annotations.squeeze(dim=1).squeeze(dim=1)
+        # Filter out any annotations that aren't in our subselection:
+        not_nan_annotations = not_nan_annotations[index_list]
+        issue_mask = not_nan_annotations != 0 # True where issue exists
+        # issue_mask can now be applied to anything that has been filtered by index_list
+        issue_paths = (context_clip_paths[index_list]).squeeze(axis=1)[issue_mask]
+
+        #issue_labels = context_labels[index_list][issue_mask]
+        
+        if issue_paths.size == 0:
+            continue
+        save_frame_grid(issue_paths,  output_path, key)
+
+def save_frame_grid(clip_paths, output_path, file_prefix):
+    all_frames = []
+    for p in range(clip_paths.size):
+        frame_path = clip_paths[p]
+        user = frame_path.split('/')[3]
+        frame = Image.open(frame_path)
+        frame = tv_F.to_tensor(frame)
+        all_frames.append(frame)
+    filename = "{}_{}.png".format(user, file_prefix)
+    # Save them out
+    save_image(all_frames, os.path.join(output_path, filename))
+
+
+def sample_noisy_frames(context_clip_paths, annotations_dict, context_labels, object_list, output_dir):
     
     for key in annotations_dict.keys():
-        #import pdb; pdb.set_trace()
         # Handle nan values
         not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
         issue_mask = (not_nan_annotations != 0).squeeze() # True where issue exists
@@ -179,4 +226,5 @@ def sample_noisy_frames(context_clip_paths, annotations_dict, output_dir, contex
             
             # Save them out
             save_image(frame, output_dir + "/" + filename)
+
 
