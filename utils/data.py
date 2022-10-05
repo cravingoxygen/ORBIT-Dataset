@@ -193,7 +193,7 @@ def save_frame_grid(clip_paths, output_path, file_prefix):
     all_frames = []
     for p in range(clip_paths.size):
         frame_path = clip_paths[p]
-        user = frame_path.split('/')[3]
+        user = frame_path.split('/')[-5]
         frame = Image.open(frame_path)
         frame = tv_F.to_tensor(frame)
         all_frames.append(frame)
@@ -218,7 +218,7 @@ def sample_noisy_frames(context_clip_paths, annotations_dict, context_labels, ob
         sub_context_labels = context_labels[issue_mask][0:issue_paths.size]
         for p in range(issue_paths.size):
             frame_path = issue_paths[p]
-            user = frame_path.split('/')[3]
+            user = frame_path.split('/')[-5]
             
             frame = Image.open(frame_path)
             frame = tv_F.to_tensor(frame)
