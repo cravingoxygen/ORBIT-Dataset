@@ -40,8 +40,9 @@ from models.few_shot_recognisers import SingleStepFewShotRecogniser
 from utils.args import parse_args
 from utils.ops_counter import OpsCounter
 from utils.optim import cross_entropy, init_optimizer
-from utils.data import get_clip_loader, unpack_task, attach_frame_history, process_annotations_dict, sample_noisy_frames, save_selected_frames
-from utils.logging import print_and_log, get_log_files, stats_to_str
+from utils.data import get_clip_loader, unpack_task, attach_frame_history, save_selected_frames, visualize_context_clips
+from utils.data import handle_nan_annotations, get_user_id_from_clip_path
+from utils.logging import print_and_log, get_log_files, stats_to_str, plot_hist, save_image_paths
 from utils.eval_metrics import TrainEvaluator, ValidationEvaluator, TestEvaluator
 from utils.noise_tracker import NoiseTracker
 
@@ -336,8 +337,9 @@ class Learner:
         noise_tracker = NoiseTracker(self.args.annotations_to_load)
 
         # Make random its own generator to use
+        seed = 12345
         if self.args.importance_calculator == 'random':
-            rng = np.random.default_rng(12345)
+            rng = np.random.default_rng(seed)
         else:
             rng = None
 
@@ -348,8 +350,14 @@ class Learner:
             for step, task_dict in enumerate(self.test_queue.get_tasks()):
                 context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, 
                                                                                                                                                         preload_clips=self.args.preload_clips, remove_target_frames_without_object=True )
-                context_noise = process_annotations_dict(task_dict['context_annotations']).squeeze() #Get 'ground truth' of whether context points are noisy
+                #save_image_paths(context_clip_paths, target_paths_by_video, seed, self.checkpoint_dir)
+                #continue
 
+                user = get_user_id_from_clip_path(context_clip_paths[0])
+                annotations_dict = handle_nan_annotations(task_dict['context_annotations'])
+
+                plot_hist(context_labels, list(range(len(object_list)+1)), "context_distrib", self.checkpoint_dir, user=user,
+                         x_label='Classes', y_label='Count', title="Context Class Distribution") #task_num=step%self.args.test_tasks_per_user
                 # if this is a user's first task, cache their target videos (as they remain constant for all their tasks - ie. num_test_tasks_per_user)
                 if step % self.args.test_tasks_per_user == 0:
                     cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video = target_frames_by_video, target_paths_by_video, target_labels_by_video
@@ -376,7 +384,7 @@ class Learner:
                 keep_indices, drop_indices = metaloo.drop_worst(weights, drop_rate=self.args.drop_rate, spread_constraint=self.args.spread_constraint, class_labels=context_labels)
                 drop_mask = np.zeros(len(context_clips), dtype=bool)
                 drop_mask[drop_indices] = True
-                noise_tracker.append_video(task_dict['context_annotations'], drop_mask)
+                noise_tracker.append_video(annotations_dict, drop_mask)
 
                 reduced_context_clips, reduced_context_labels = context_clips[keep_indices], context_labels[keep_indices]
                 self.model.personalise(reduced_context_clips, reduced_context_labels, ops_counter=self.ops_counter)
@@ -389,9 +397,12 @@ class Learner:
 
                 # Save out selected (dropped) frames
                 # Save out sample of noisy frames, ideally of most noisy frames (what if there are many?)
-                save_selected_frames(context_clip_paths, task_dict['context_annotations'], context_labels, object_list, self.checkpoint_dir, keep_indices, "keep")
-                save_selected_frames(context_clip_paths, task_dict['context_annotations'], context_labels, object_list, self.checkpoint_dir, drop_indices, "drop")
-
+                #save_selected_frames(context_clip_paths, task_dict['context_annotations'], context_labels, object_list, self.checkpoint_dir, keep_indices, "keep")
+                #save_selected_frames(context_clip_paths, task_dict['context_annotations'], context_labels, object_list, self.checkpoint_dir, drop_indices, "drop")
+                visualize_context_clips(context_clip_paths, annotations_dict, context_labels, object_list, drop_indices, self.checkpoint_dir)
+                plot_hist(context_labels[keep_indices], list(range(len(object_list)+1)), "keep_distrib", self.checkpoint_dir, user=user, 
+                         x_label='Classes', y_label='Count', title="Reduced Class Distribution") #task_num=step%self.args.test_tasks_per_user
+                
                 # TODO: should we be resetting between each call?
                 # reset task's params
                 self.model._reset()
@@ -445,6 +456,7 @@ class Learner:
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.validation_evaluator.replace(checkpoint['best_stats'])
+
  
 if __name__ == "__main__":
     main()
