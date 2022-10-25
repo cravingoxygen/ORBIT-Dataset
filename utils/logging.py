@@ -4,6 +4,9 @@
 import os
 import sys
 from datetime import datetime
+import matplotlib.pyplot as plt
+import torch
+import numpy as np
 
 def print_and_log(log_file, message):
     print(message)
@@ -45,3 +48,39 @@ def stats_to_str(stats):
         else:
             s+='{0:}: {1:.2f} '.format(stat, scores*100)
     return s
+
+def convert_to_numpy(x):
+    if torch.is_tensor(x):
+        if x.is_cuda:
+            return x.cpu().numpy()
+        else:
+            return x.numpy()
+    else:
+        return x
+
+
+def plot_hist(x, bins, filename, checkpoint_dir, user=None, task_num=None, title='', x_label='', y_label='', density=False):
+    x = convert_to_numpy(x)
+    plt.hist(x, bins=bins, density=density)
+    plt.xlabel(x_label)
+    plt.ylabel(y_label)
+    plt.title(title)
+    plt.grid(True)
+    fname = ""
+    if user != None:
+        fname += "{}_".format(user) 
+    if task_num != None:
+        fname += "{}_".format(task_num)
+    fname += filename + ".png"
+    plt.savefig(os.path.join(checkpoint_dir, fname))
+    plt.close()
+
+def save_image_paths(context_clip_paths, target_paths_by_video, seed, checkpoint_dir):
+    file_path = os.path.join(checkpoint_dir, "clip_paths_{}.txt".format(seed))
+    with open(file_path, "a") as file:
+        #for vid in target_paths_by_video:
+        #    file.writelines(s + "\n" for s in vid)
+        for path_arr in context_clip_paths:
+            path_list = path_arr.tolist()
+            file.writelines(s + "\n" for s in path_list)
+
