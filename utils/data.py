@@ -9,6 +9,8 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms.functional as tv_F
 from torchvision.utils import save_image
+import matplotlib.pyplot as plt
+import matplotlib
 
 class DatasetFromClipPaths(Dataset):
     def __init__(self, clip_paths, with_labels):
@@ -155,6 +157,13 @@ def process_annotations_dict(annotations_dict):
             noise_tensor += not_nan_annotation
     return noise_tensor
 
+def handle_nan_annotations(annotations_dict):
+    for key in annotations_dict.keys():
+        not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
+        not_nan_annotations = not_nan_annotations.squeeze(dim=1).squeeze(dim=1)
+        annotations_dict[key] = not_nan_annotations
+    return annotations_dict
+
 #keep_indices, "keep")
 
 def save_selected_frames(context_clip_paths, annotations_dict, context_labels, object_list, output_dir, index_list=None, selection_name=""):
@@ -174,11 +183,11 @@ def save_selected_frames(context_clip_paths, annotations_dict, context_labels, o
     # For each noise type, save out all those frames as a grid:
     for key in annotations_dict.keys():
         # Handle nan values
-        not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
+        # not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
         # Preserve the batch dimension, in case there is only image with this noise type
-        not_nan_annotations = not_nan_annotations.squeeze(dim=1).squeeze(dim=1)
+        # not_nan_annotations = not_nan_annotations.squeeze(dim=1).squeeze(dim=1)
         # Filter out any annotations that aren't in our subselection:
-        not_nan_annotations = not_nan_annotations[index_list]
+        not_nan_annotations = annotations_dict[key][index_list]
         issue_mask = not_nan_annotations != 0 # True where issue exists
         # issue_mask can now be applied to anything that has been filtered by index_list
         issue_paths = (context_clip_paths[index_list]).squeeze(axis=1)[issue_mask]
@@ -206,8 +215,8 @@ def sample_noisy_frames(context_clip_paths, annotations_dict, context_labels, ob
     
     for key in annotations_dict.keys():
         # Handle nan values
-        not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
-        issue_mask = (not_nan_annotations != 0).squeeze() # True where issue exists
+        #not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
+        issue_mask = (annotations_dict[key] != 0) # True where issue exists
         # Select 10 images that have this issu to save out
         #issue_frames = context_clips[issue_mask]
         #issue_frames = issue_frames[0:min(10, len(issue_frames))]
@@ -228,3 +237,65 @@ def sample_noisy_frames(context_clip_paths, annotations_dict, context_labels, ob
             save_image(frame, output_dir + "/" + filename)
 
 
+gizmo_dict = {'blur_issue': 'b', 'framing_issue':'f', 'object_not_present_issue':'n', 'occlusion_issue':'o', 'overexposed_issue': '+', 'underexposed_issue': '-', 'viewpoint_issue': 'v'}
+def visualize_context_clips(context_clip_paths, annotations_dict, context_labels, object_list, dropped_indices, output_dir, task_num=None):
+    # So we have a grid of images, where each row is for a different class
+    # We can get the class label from the object list
+    num_rows = len(object_list)
+    # Then we show each instance of the class in its own little column; I'm not sure if we have equal representation, so this may be jagged
+    # Let's read in a grid of images
+    image_infos = []
+    for r in range(num_rows):
+        image_infos.append([])
+    for p in range(context_clip_paths.size):
+        frame_path = context_clip_paths[p][0]
+        user = frame_path.split('/')[-5]
+        frame = Image.open(frame_path)
+        dropped = np.isin(p, dropped_indices)
+        annot_string = ""
+        for issue in annotations_dict.keys():
+            if annotations_dict[issue][p] != 0:
+                annot_string += gizmo_dict[issue]
+        image_info = (frame, dropped, annot_string)
+        image_infos[context_labels[p]].append(image_info)
+    num_cols = -1
+
+    for r in range(num_rows):
+        if len(image_infos[r]) > num_cols:
+            num_cols = len(image_infos[r])
+    # Great, now we have our grid of image_infos. Let's put them on matplotlib subfigures
+    f, axarr = plt.subplots(num_rows, num_cols, figsize=(num_cols+1,num_rows+1))
+    f.tight_layout()
+    plt.axis('off')
+    for r in range(num_rows):
+        axarr[r][0].set_ylabel(object_list[r], rotation='vertical', size='large')
+        for c in range(num_cols):
+            # No more instances of this class, go to next class/row
+            if c >= len(image_infos[r]):
+                axarr[r,c].axis('off')
+                continue
+            # Set image
+            image, dropped, annot_string = image_infos[r][c]
+            axarr[r,c].imshow(image, aspect='auto')
+
+            # We want the borders of the dropped images to be a different color from the selected images (red vs green)
+            axis_color = '#db321f' if dropped else '#1fdb4b'
+            # Set boundary if image is in list of dropped indices(?)
+            for child in axarr[r,c].get_children():
+                if isinstance(child, matplotlib.spines.Spine):
+                    child.set_color(axis_color)
+            # We want to display a little "gizmo" string of annotations on each image
+            axarr[r,c].text(0, 0, annot_string)
+            axarr[r,c].get_xaxis().set_ticks([])
+            axarr[r,c].get_yaxis().set_ticks([])
+    
+    plt.subplots_adjust(wspace=0.01, hspace=0.3)
+    if task_num is None:
+        plt.savefig(os.path.join(output_dir, "{}_context.png".format(user)), bbox_inches='tight')
+    else:
+        plt.savefig(os.path.join(output_dir, "{}_{}_context.png".format(user, task_num)), bbox_inches='tight')
+
+    plt.close()
+
+def get_user_id_from_clip_path(context_clip_path):
+    return context_clip_path[0].split('/')[-5]
