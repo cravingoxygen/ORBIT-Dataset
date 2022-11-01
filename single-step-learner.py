@@ -350,7 +350,7 @@ class Learner:
             for step, task_dict in enumerate(self.test_queue.get_tasks()):
                 context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, 
                                                                                                                                                         preload_clips=self.args.preload_clips, remove_target_frames_without_object=True )
-                #save_image_paths(context_clip_paths, target_paths_by_video, seed, self.checkpoint_dir)
+                save_image_paths(context_clip_paths, target_paths_by_video, seed, self.checkpoint_dir, step)
                 #continue
 
                 user = get_user_id_from_clip_path(context_clip_paths[0])

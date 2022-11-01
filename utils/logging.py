@@ -7,6 +7,8 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
+#import json
+import pickle
 
 def print_and_log(log_file, message):
     print(message)
@@ -75,8 +77,23 @@ def plot_hist(x, bins, filename, checkpoint_dir, user=None, task_num=None, title
     plt.savefig(os.path.join(checkpoint_dir, fname))
     plt.close()
 
-def save_image_paths(context_clip_paths, target_paths_by_video, seed, checkpoint_dir):
-    file_path = os.path.join(checkpoint_dir, "clip_paths_{}.txt".format(seed))
+
+def save_image_paths(context_clip_paths, target_paths_by_video, seed, checkpoint_dir, task_num):
+    output_dir = os.path.join(checkpoint_dir, "tasks_for_seed_{}".format(seed))
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    file_path = os.path.join(output_dir, "task_{}.pickle".format(task_num))
+
+    with open(file_path, "wb") as file:
+        clip_path_dict = { "context_clip_paths": context_clip_paths,
+                           "target_paths_by_video": target_paths_by_video,
+                            "task": task_num,
+                          }
+        pickle.dump(clip_path_dict, file)
+
+
+def dump_context_paths_to_file(context_clip_paths, seed, checkpoint_dir):
+    file_path = os.path.join(checkpoint_dir, "clip_paths_seed_{}.txt".format(seed))
     with open(file_path, "a") as file:
         #for vid in target_paths_by_video:
         #    file.writelines(s + "\n" for s in vid)
