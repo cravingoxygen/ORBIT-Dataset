@@ -162,6 +162,9 @@ def handle_nan_annotations(annotations_dict):
         not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
         not_nan_annotations = not_nan_annotations.squeeze(dim=1).squeeze(dim=1)
         annotations_dict[key] = not_nan_annotations
+    # Check that if we're using hand annotations, then all of the data must have a hand label
+    if 'bad' in annotations_dict.keys():
+        assert (annotations_dict["bad"] + annotations_dict["medium"] + annotations_dict["good"]).sum() == annotations_dict["bad"].shape[0]
     return annotations_dict
 
 #keep_indices, "keep")
@@ -237,7 +240,7 @@ def sample_noisy_frames(context_clip_paths, annotations_dict, context_labels, ob
             save_image(frame, output_dir + "/" + filename)
 
 
-gizmo_dict = {'blur_issue': 'b', 'framing_issue':'f', 'object_not_present_issue':'n', 'occlusion_issue':'o', 'overexposed_issue': '+', 'underexposed_issue': '-', 'viewpoint_issue': 'v'}
+gizmo_dict = {'blur_issue': 'b', 'framing_issue':'f', 'object_not_present_issue':'n', 'occlusion_issue':'o', 'overexposed_issue': '+', 'underexposed_issue': '-', 'viewpoint_issue': 'v', 'bad': 'B', 'medium': 'M', 'good': 'G'}
 def visualize_context_clips(context_clip_paths, annotations_dict, context_labels, object_list, dropped_indices, output_dir, task_num=None):
     # So we have a grid of images, where each row is for a different class
     # We can get the class label from the object list
@@ -253,10 +256,15 @@ def visualize_context_clips(context_clip_paths, annotations_dict, context_labels
         frame = Image.open(frame_path)
         dropped = np.isin(p, dropped_indices)
         annot_string = ""
+        #hand_annot_string = ""
         for issue in annotations_dict.keys():
+            #if issue == "label":
+            #    hand_annot_string += annotations_dict[issue][p]
+            #    continue
             if annotations_dict[issue][p] != 0:
-                annot_string += gizmo_dict[issue]
-        image_info = (frame, dropped, annot_string)
+                if issue in gizmo_dict:
+                    annot_string += gizmo_dict[issue]
+        image_info = (frame, dropped, annot_string) # + hand_annot_string)
         image_infos[context_labels[p]].append(image_info)
     num_cols = -1
 

@@ -4,7 +4,7 @@
 import sys
 import argparse
 
-FRAME_ANNOTATION_OPTIONS = ["object_not_present_issue", "framing_issue", "viewpoint_issue", "blur_issue", "occlusion_issue", "overexposed_issue", "underexposed_issue"]
+FRAME_ANNOTATION_OPTIONS = ["object_not_present_issue", "framing_issue", "viewpoint_issue", "blur_issue", "occlusion_issue", "overexposed_issue", "underexposed_issue", "good", "medium", "bad"]
 BOUNDING_BOX_OPTIONS = ["object_bounding_box"]
 
 def parse_args(learner='default'):
