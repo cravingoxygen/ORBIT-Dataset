@@ -40,9 +40,9 @@ from models.few_shot_recognisers import SingleStepFewShotRecogniser
 from utils.args import parse_args
 from utils.ops_counter import OpsCounter
 from utils.optim import cross_entropy, init_optimizer
-from utils.data import get_clip_loader, unpack_task, attach_frame_history, save_selected_frames, visualize_context_clips
+from utils.data import get_clip_loader, unpack_task, attach_frame_history, save_selected_frames, visualize_context_clips, visualize_target_clips
 from utils.data import handle_nan_annotations, get_user_id_from_clip_path
-from utils.logging import print_and_log, get_log_files, stats_to_str, plot_hist, save_image_paths
+from utils.logging import print_and_log, get_log_files, stats_to_str, plot_hist, save_image_paths, save_task
 from utils.eval_metrics import TrainEvaluator, ValidationEvaluator, TestEvaluator
 from utils.noise_tracker import NoiseTracker
 
@@ -60,7 +60,7 @@ class Learner:
         self.args = parse_args()
 
         self.checkpoint_dir, self.logfile, self.checkpoint_path_validation, self.checkpoint_path_final \
-            = get_log_files(self.args.checkpoint_dir, self.args.model_path)
+            = get_log_files(self.args.checkpoint_dir, self.args.model_path, experiment_name=self.args.experiment_name)
 
         print_and_log(self.logfile, "Options: %s\n" % self.args)
         print_and_log(self.logfile, "Checkpoint Directory: %s\n" % self.checkpoint_dir) 
@@ -110,6 +110,9 @@ class Learner:
             'frame_size': self.args.frame_size,
             'annotations_to_load': self.args.annotations_to_load,
             'preload_clips': self.args.preload_clips,
+            'load_from_path': self.args.load_from_path,
+            'filter_task_by_saved_mask': self.args.filter_task_by_saved_mask,
+            'generate_new_target_set': self.args.generate_new_target_set,
         }
         
         dataloader = DataLoader(dataset_info)
@@ -290,9 +293,16 @@ class Learner:
         with torch.no_grad():
             # loop through test tasks (num_test_users * num_test_tasks_per_user)
             num_test_tasks = self.test_queue.num_users * self.args.test_tasks_per_user
-            for step, task_dict in enumerate(self.test_queue.get_tasks()):
-                context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, preload_clips=self.args.preload_clips)
 
+            remove_target_frames_without_object = True 
+            if self.args.load_from_path is not None and not self.args.generate_new_target_set:
+                remove_target_frames_without_object = False # Do exactly the saved out task
+
+            for step, task_dict in enumerate(self.test_queue.get_tasks()):
+                context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, \
+                                                                                                                preload_clips=self.args.preload_clips, remove_target_frames_without_object=remove_target_frames_without_object)
+                # Something went wrong if these don't match
+                assert task_dict["task"] == step
                 # if this is a user's first task, cache their target videos (as they remain constant for all their tasks - ie. num_test_tasks_per_user)
                 if step % self.args.test_tasks_per_user == 0:
                     cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video = target_frames_by_video, target_paths_by_video, target_labels_by_video
@@ -320,12 +330,7 @@ class Learner:
                     if (step+1) < num_test_tasks:
                         self.test_evaluator.next_user()
                     
-            stats_per_user, stats_per_video = self.test_evaluator.get_mean_stats()
-            stats_per_user_str, stats_per_video_str = stats_to_str(stats_per_user), stats_to_str(stats_per_video)
-            mean_ops_stats = self.ops_counter.get_mean_stats()
-            print_and_log(self.logfile, f'{self.args.test_set} [{path}]\n per-user stats: {stats_per_user_str}\n per-video stats: {stats_per_video_str}\n model stats: {mean_ops_stats}\n')
-            self.test_evaluator.save()
-            self.test_evaluator.reset()
+            self.save_and_reset_stats(self.test_evaluator, path, descriptor="full")
 
     def detect_noisy_shots(self, path):
         
@@ -337,7 +342,7 @@ class Learner:
         noise_tracker = NoiseTracker(self.args.annotations_to_load)
 
         # Make random its own generator to use
-        seed = 12345
+        seed = self.args.random_drop_seed
         if self.args.importance_calculator == 'random':
             rng = np.random.default_rng(seed)
         else:
@@ -346,13 +351,18 @@ class Learner:
         with torch.no_grad():
             # loop through test tasks (num_test_users * num_test_tasks_per_user)
             num_test_tasks = self.test_queue.num_users * self.args.test_tasks_per_user
+            # We want to remove bad target frames if we aren't sampling the target set
+            # We sample the target set if we aren't loading from path or if we are loading from path, but generate_new_target_set = True
+            remove_target_frames_without_object = True
+            if self.args.load_from_path is not None and not self.args.generate_new_target_set:
+                remove_target_frames_without_object = False
             # How are user tasks defined? Surely they must range over multiple classes/videos or else evaluating on the whole test set doesn't make sense
             for step, task_dict in enumerate(self.test_queue.get_tasks()):
                 context_clips, context_clip_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, 
-                                                                                                                                                        preload_clips=self.args.preload_clips, remove_target_frames_without_object=True )
-                save_image_paths(context_clip_paths, target_paths_by_video, seed, self.checkpoint_dir, step)
+                                                                                                                                                        preload_clips=self.args.preload_clips, 
+                                                                                                                                                        remove_target_frames_without_object=remove_target_frames_without_object )
+                #save_image_paths(context_clip_paths, target_paths_by_video, seed, self.checkpoint_dir, step)
                 #continue
-
                 user = get_user_id_from_clip_path(context_clip_paths[0])
                 annotations_dict = handle_nan_annotations(task_dict['context_annotations'])
 
@@ -361,6 +371,7 @@ class Learner:
                 # if this is a user's first task, cache their target videos (as they remain constant for all their tasks - ie. num_test_tasks_per_user)
                 if step % self.args.test_tasks_per_user == 0:
                     cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video = target_frames_by_video, target_paths_by_video, target_labels_by_video
+                del target_frames_by_video, target_paths_by_video, target_labels_by_video
 
                 # dummy warm-up to get correct timing
                 self.model.personalise(context_clips, context_labels, ops_counter=False)
@@ -378,13 +389,17 @@ class Learner:
                     weights = torch.Tensor(weights)
                 elif self.args.importance_calculator == 'loo_loss':
                     # calculate loo weights
-                    weights = metaloo.calculate_loo(self.model, context_clips, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video,
+                    weights = metaloo.calculate_loo(self.model, context_clips, context_labels, cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video,
                                                          object_list, self.ops_counter, self.args.clip_length)
                 # use these weights to do something
                 keep_indices, drop_indices = metaloo.drop_worst(weights, drop_rate=self.args.drop_rate, spread_constraint=self.args.spread_constraint, class_labels=context_labels)
                 drop_mask = np.zeros(len(context_clips), dtype=bool)
                 drop_mask[drop_indices] = True
                 noise_tracker.append_video(annotations_dict, drop_mask)
+
+                if self.args.save_out_tasks:
+                    save_task(task_dict, ~drop_mask, step, seed, self.checkpoint_dir)
+
 
                 reduced_context_clips, reduced_context_labels = context_clips[keep_indices], context_labels[keep_indices]
                 self.model.personalise(reduced_context_clips, reduced_context_labels, ops_counter=self.ops_counter)
@@ -400,6 +415,7 @@ class Learner:
                 #save_selected_frames(context_clip_paths, task_dict['context_annotations'], context_labels, object_list, self.checkpoint_dir, keep_indices, "keep")
                 #save_selected_frames(context_clip_paths, task_dict['context_annotations'], context_labels, object_list, self.checkpoint_dir, drop_indices, "drop")
                 visualize_context_clips(context_clip_paths, annotations_dict, context_labels, object_list, drop_indices, self.checkpoint_dir)
+                visualize_target_clips(cached_target_paths_by_video, cached_target_labels_by_video, object_list, self.checkpoint_dir)
                 plot_hist(context_labels[keep_indices], list(range(len(object_list)+1)), "keep_distrib", self.checkpoint_dir, user=user, 
                          x_label='Classes', y_label='Count', title="Reduced Class Distribution") #task_num=step%self.args.test_tasks_per_user
                 
@@ -408,7 +424,6 @@ class Learner:
                 self.model._reset()
                 # add task's ops to self.ops_counter
                 self.ops_counter.task_complete()
-
                 # if this is the user's last task, get the average performance for the user
                 if (step+1) % self.args.test_tasks_per_user == 0:
                     self.print_current_user_stats(self.test_evaluator, task_dict["user_id"], descriptor="full") # Save out clean stats using default test evaluator
@@ -421,6 +436,8 @@ class Learner:
 
         friendly_str, data_dict = noise_tracker.get_summary_stats_str(noise_tracker.get_mean_stats())
         print_and_log(self.logfile, friendly_str)
+        self.test_evaluator.save_user_stats_to_df(os.path.join(self.checkpoint_dir, "full_results.csv"))
+        reduced_evaluator.save_user_stats_to_df(os.path.join(self.checkpoint_dir, "{}_results.csv".format(self.args.importance_calculator)))
         self.save_and_reset_stats(self.test_evaluator, path, descriptor="full")
         self.save_and_reset_stats(reduced_evaluator, path, descriptor="reduced")
 
@@ -434,6 +451,18 @@ class Learner:
         print_and_log(self.logfile, f'{self.args.test_set} user {user_id} ({evaluator.current_user+1}/{self.test_queue.num_users})  {descriptor} stats: {stats_to_str(current_user_stats)}')
 
     def save_and_reset_stats(self, evaluator, path, descriptor=""):
+        table_str = f'{descriptor}\n'
+        for stat in evaluator.stats_to_compute:
+            table_str += "," + stat
+        table_str += "\n"
+        for user in range(0, evaluator.current_user+1):
+            table_str += f'{self.args.test_set} user {evaluator.user2userid[user]} ({user+1}/{self.test_queue.num_users})'
+            for stat in evaluator.stats_to_compute:
+                _, mean, var = evaluator.get_user_stats(user, stat)
+                table_str += f',{mean*100:.3f}'
+            table_str += '\n'
+
+        self.logfile.write(table_str + '\n')
         stats_per_user, stats_per_video = evaluator.get_mean_stats()
         stats_per_user_str, stats_per_video_str = stats_to_str(stats_per_user), stats_to_str(stats_per_video)
         mean_ops_stats = self.ops_counter.get_mean_stats()
