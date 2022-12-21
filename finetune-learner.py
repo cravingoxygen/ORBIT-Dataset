@@ -54,11 +54,11 @@ class Learner:
     def __init__(self):
         self.args = parse_args(learner='gradient-learner')
 
-        self.checkpoint_dir, self.logfile, self.checkpoint_path_validation, self.checkpoint_path_final \
-            = get_log_files(self.args.checkpoint_dir, self.args.model_path)
+        self.checkpoint_dir, self.log_file, self.checkpoint_path_validation, self.checkpoint_path_final \
+            = get_log_files(self.args.checkpoint_dir, self.args.model_path, experiment_name=self.args.experiment_name)
 
-        print_and_log(self.logfile, "Options: %s\n" % self.args)
-        print_and_log(self.logfile, "Checkpoint Directory: %s\n" % self.checkpoint_dir)
+        print_and_log(self.log_file, "Options: %s\n" % self.args)
+        print_and_log(self.log_file, "Checkpoint Directory: %s\n" % self.checkpoint_dir)
 
         random.seed(self.args.seed)
         torch.manual_seed(self.args.seed)
@@ -104,6 +104,9 @@ class Learner:
             'frame_size': self.args.frame_size,
             'annotations_to_load': self.args.annotations_to_load,
             'preload_clips': self.args.preload_clips,
+            'load_from_path': self.args.load_from_path,
+            'filter_task_by_saved_mask': self.args.filter_task_by_saved_mask,
+            'generate_new_target_set': self.args.generate_new_target_set,
         }
 
         dataloader = DataLoader(dataset_info)
@@ -165,15 +168,15 @@ class Learner:
 
                     if self.args.print_by_step:
                         current_stats_str = stats_to_str(self.train_evaluator.get_current_stats())
-                        print_and_log(self.logfile, f'epoch [{epoch+1}/{self.args.epochs}][{step+1}/{total_steps}], train loss: {task_loss.item():.7f}, {current_stats_str.strip()}, time/task: {int(task_time/60):d}m{int(task_time%60):02d}s')
+                        print_and_log(self.log_file, f'epoch [{epoch+1}/{self.args.epochs}][{step+1}/{total_steps}], train loss: {task_loss.item():.7f}, {current_stats_str.strip()}, time/task: {int(task_time/60):d}m{int(task_time%60):02d}s')
 
                 mean_stats = self.train_evaluator.get_mean_stats()
                 mean_epoch_loss = torch.Tensor(losses).mean().item()
                 seconds = time.time() - since
                 # print
-                print_and_log(self.logfile, '-' * 100)
-                print_and_log(self.logfile, f'epoch [{epoch+1}/{self.args.epochs}] train loss: {mean_epoch_loss:.7f} {stats_to_str(mean_stats)} time/epoch: {int(seconds/60):d}m{int(seconds%60):02d}s')
-                print_and_log(self.logfile, '-' * 100)
+                print_and_log(self.log_file, '-' * 100)
+                print_and_log(self.log_file, f'epoch [{epoch+1}/{self.args.epochs}] train loss: {mean_epoch_loss:.7f} {stats_to_str(mean_stats)} time/epoch: {int(seconds/60):d}m{int(seconds%60):02d}s')
+                print_and_log(self.log_file, '-' * 100)
                 self.train_evaluator.reset()
                 self.save_checkpoint(epoch + 1)
 
@@ -190,8 +193,9 @@ class Learner:
 
         if self.args.mode == 'test':
             self.test(self.args.model_path)
+            #self.softmax_thresholds(self.args.model_path)
 
-        self.logfile.close()
+        self.log_file.close()
 
     def train_task(self, task_dict):
 
@@ -236,19 +240,19 @@ class Learner:
                 # if this is a user's last task, get the average performance for the user
                 if (step+1) % self.args.test_tasks_per_user == 0:
                     _, current_user_stats = self.validation_evaluator.get_mean_stats(current_user=True)
-                    print_and_log(self.logfile, f'validation user {task_dict["user_id"]} ({self.validation_evaluator.current_user+1}/{self.validation_queue.num_users}) stats: {stats_to_str(current_user_stats)}')
+                    print_and_log(self.log_file, f'validation user {task_dict["user_id"]} ({self.validation_evaluator.current_user+1}/{self.validation_queue.num_users}) stats: {stats_to_str(current_user_stats)}')
                     if (step+1) < num_val_tasks:
                         self.validation_evaluator.next_user()
 
         # get average performance over all users
         stats_per_user, stats_per_video = self.validation_evaluator.get_mean_stats()
         stats_per_user_str, stats_per_video_str = stats_to_str(stats_per_user), stats_to_str(stats_per_video)
-        print_and_log(self.logfile, f'validation\n per-user stats: {stats_per_user_str}\n per-video stats: {stats_per_video_str}\n')
+        print_and_log(self.log_file, f'validation\n per-user stats: {stats_per_user_str}\n per-video stats: {stats_per_video_str}\n')
         # save the model if validation is the best so far
         if self.validation_evaluator.is_better(stats_per_video):
             self.validation_evaluator.replace(stats_per_video)
             torch.save(self.model.state_dict(), self.checkpoint_path_validation)
-            print_and_log(self.logfile, 'best validation model was updated.\n')
+            print_and_log(self.log_file, 'best validation model was updated.\n')
 
         self.validation_evaluator.reset()
 
@@ -267,6 +271,7 @@ class Learner:
             # if this is a user's first task, cache their target videos (as they remain constant for all their tasks - ie. num_test_tasks_per_user)
             if step % self.args.test_tasks_per_user == 0:
                 cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video = target_frames_by_video, target_paths_by_video, target_labels_by_video
+            del target_frames_by_video, target_paths_by_video, target_labels_by_video
 
             # initialise finetuner model to initial state of self.model for current task
             finetuner = self.init_finetuner()
@@ -289,19 +294,137 @@ class Learner:
                 # if this is the user's last task, get the average performance for the user
                 if (step+1) % self.args.test_tasks_per_user == 0:
                     _, current_user_stats = self.test_evaluator.get_mean_stats(current_user=True)
-                    print_and_log(self.logfile, f'{self.args.test_set} user {task_dict["user_id"]} ({self.test_evaluator.current_user+1}/{self.test_queue.num_users}) stats: {stats_to_str(current_user_stats)}')
+                    print_and_log(self.log_file, f'{self.args.test_set} user {task_dict["user_id"]} ({self.test_evaluator.current_user+1}/{self.test_queue.num_users}) stats: {stats_to_str(current_user_stats)}')
                     if (step+1) < num_test_tasks:
                         self.test_evaluator.next_user()
 
         # get average performance over all users
-        stats_per_user, stats_per_video = self.test_evaluator.get_mean_stats()
+        self.save_stats(self.test_evaluator, path if path else self.checkpoint_dir, self.args.experiment_name)
+        self.test_evaluator.save_user_stats_to_df(os.path.join(self.checkpoint_dir, "transfer_results.csv"))
+        self.test_evaluator.reset()
+
+
+    def softmax_thresholds(self, path):
+
+        self.model = self.init_model()
+        if path: # if path is None, use model as initialised in init_model()
+            self.model.load_state_dict(torch.load(path, map_location=self.map_location), strict=False)
+        self.ops_counter.set_base_params(self.model)
+
+        info_dump = ""
+        user_thresh_results = []
+        softmax = torch.nn.Softmax(dim=1)
+
+        # loop through test tasks (num_test_users * num_test_tasks_per_user)
+        num_test_tasks = self.test_queue.num_users * self.args.test_tasks_per_user
+        for step, task_dict in enumerate(self.test_queue.get_tasks()):
+            context_clips, context_paths, context_labels, target_frames_by_video, target_paths_by_video, target_labels_by_video, object_list = unpack_task(task_dict, self.device, context_to_device=False, preload_clips=self.args.preload_clips)
+            annotations_dict = task_dict["context_annotations"]
+            # if this is a user's first task, cache their target videos (as they remain constant for all their tasks - ie. num_test_tasks_per_user)
+            if step % self.args.test_tasks_per_user == 0:
+                cached_target_frames_by_video, cached_target_paths_by_video, cached_target_labels_by_video = target_frames_by_video, target_paths_by_video, target_labels_by_video
+
+            # initialise finetuner model to initial state of self.model for current task
+            finetuner = self.init_finetuner()
+
+            # adapt to current task by finetuning on context clips
+            t1 = time.time()
+            learning_args=(self.args.inner_learning_rate, self.loss, 'sgd', 1.0)
+            finetuner.personalise(context_clips, context_labels, learning_args, ops_counter=self.ops_counter)
+            self.ops_counter.log_time(time.time() - t1)
+            # add task's ops to self.ops_counter
+            self.ops_counter.task_complete()
+
+            # Instead of now evaluating the finetuned model, we want to do logit analysis on the context set
+            issue_types = annotations_dict.keys()
+            results_dict = {}
+            for issue in issue_types:
+                results_dict[issue] = []
+            thresholds = [0 + 0.0125*x for x in range(10)] + [0.125 + 0.025*x for x in range(35)] + [0.875 + 0.0125*x for x in range(10)]
+            for thresh in thresholds:
+                context_logits = finetuner.predict(context_clips)
+                softmax_probs = softmax(context_logits)
+                for issue in issue_types:
+                    # Unilaterally declare that all context_logits > thresh has issue
+                    # Calculate the accuracy of that statement
+                    predict_issue = (softmax_probs.max(dim=1)[0] < thresh).cpu()
+                    actual_issue = annotations_dict[issue].squeeze() == 1
+                    acc = np.equal(predict_issue, actual_issue).double().mean().item()*100
+                    #tp = (predict_issue & actual_issue).double().mean().item()*100
+                    #fp = (predict_issue & ~actual_issue).double().mean().item()*100
+                    #fn = (~predict_issue & actual_issue).double().mean().item()*100
+                    #tn = (~predict_issue & ~actual_issue).double().mean().item()*100
+                    results_dict[issue].append(acc) #(acc, tp, fp, fn, tn))
+                    
+            # Save out results of sweep
+            res_string = "User {}\n".format(step+1)
+            for thresh in thresholds:
+                res_string += ",{:.4f}".format(thresh)  
+            res_string += "\n"
+            for issue in issue_types:
+                res_string += issue
+                for acc in results_dict[issue]:
+                    res_string += ",{:.4f}".format(acc)
+                res_string += "\n"
+                
+            info_dump += res_string
+            
+            user_thresh_res = {}
+            for issue in issue_types:
+                best_thresh_index = np.argmax(results_dict[issue])
+                user_thresh_res[issue] = (thresholds[best_thresh_index], results_dict[issue][best_thresh_index])
+            user_thresh_results.append(user_thresh_res)
+                            
+        print_and_log(self.log_file, info_dump)
+        print_and_log(self.log_file, "{}".format(user_thresh_results))
+        
+        header_string = ""
+        for issue in issue_types:
+            header_string += f',{issue}'
+        header_string += "\n"
+        acc_str, thresh_str = "", ""
+        user_count = 0
+        for user_res_dict in user_thresh_results:
+            acc_str += "User {}/{}".format(user_count+1, len(user_thresh_results))
+            thresh_str += "User {}/{}".format(user_count+1, len(user_thresh_results))
+            for key in user_res_dict.keys():
+                acc_str += ",{:.4f}".format(user_res_dict[key][1])
+                thresh_str += ",{:.4f}".format(user_res_dict[key][0])
+            acc_str += "\n"
+            thresh_str += "\n"
+            user_count += 1
+        print_and_log(self.log_file, header_string)
+        print_and_log(self.log_file, acc_str)
+        print_and_log(self.log_file, header_string)
+        print_and_log(self.log_file, thresh_str)
+        
+
+
+
+    def print_current_user_stats(self, evaluator, user_id, descriptor=""):
+        _, current_user_stats = evaluator.get_mean_stats(current_user=True)
+        print_and_log(self.log_file, f'{self.args.test_set} user {user_id} ({evaluator.current_user+1}/{self.test_queue.num_users})  {descriptor} stats: {stats_to_str(current_user_stats)}')
+
+    def save_stats(self, evaluator, path, descriptor=""):
+        table_str = f'{descriptor}\n'
+        for stat in evaluator.stats_to_compute:
+            table_str += "," + stat
+        table_str += "\n"
+        for user in range(0, evaluator.current_user+1):
+            table_str += f'{self.args.test_set} user {evaluator.user2userid[user]} ({user+1}/{self.test_queue.num_users})'
+            for stat in evaluator.stats_to_compute:
+                _, mean, var = evaluator.get_user_stats(user, stat)
+                table_str += f',{mean*100:.8f}'
+            table_str += '\n'
+
+        self.log_file.write(table_str + '\n')
+        stats_per_user, stats_per_video = evaluator.get_mean_stats()
         stats_per_user_str, stats_per_video_str = stats_to_str(stats_per_user), stats_to_str(stats_per_video)
         mean_ops_stats = self.ops_counter.get_mean_stats()
-        path = path if path else self.checkpoint_dir
-        print_and_log(self.logfile, f'{self.args.test_set} [{path}]\n per-user stats: {stats_per_user_str}\n per-video stats: {stats_per_video_str}\n model stats: {mean_ops_stats}\n')
-        self.test_evaluator.save()
-        self.test_evaluator.reset()
-    
+        print_and_log(self.log_file, f'{descriptor} stats\n')
+        print_and_log(self.log_file, f'{self.args.test_set} [{path}]\n per-user stats: {stats_per_user_str}\n per-video stats: {stats_per_video_str}\n model stats: {mean_ops_stats}\n')
+        evaluator.save(enforce_sequential_frames=False) #We may have removed some target points, don't enforce sequential-ness
+
     def save_checkpoint(self, epoch):
         torch.save({
             'epoch': epoch,
