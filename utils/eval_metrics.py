@@ -5,6 +5,8 @@ import json
 import torch
 import numpy as np
 from pathlib import Path
+import pandas as pd
+from itertools import repeat
 
 class Evaluator():
     def __init__(self, stats_to_compute):
@@ -71,6 +73,7 @@ class TrainEvaluator(Evaluator):
         self.running_stats = { stat: [] for stat in self.stats_to_compute }
 
     def update_stats(self, logits, labels):
+        #import pdb; pdb.set_trace()
         labels = labels.clone().cpu().numpy()
         predictions = logits.argmax(dim=-1).detach().cpu().numpy()
 
@@ -141,7 +144,22 @@ class TestEvaluator(Evaluator):
         self.user_object_lists = []
         self.user2userid = {}
 
+    def get_user_stats(self, user, stat):
+        #import pdb; pdb.set_trace()
+        user_frame_preds = self.all_frame_predictions[user] # [ video_1_frame_predss, ..., video_N_frame_preds ]
+        user_video_labels = self.all_video_labels[user] # [ video_1_label, ..., video_N_label ]
+
+        # loop over target videos for current user
+        user_video_scores = []
+        for video_label, frame_preds in zip(user_video_labels, user_frame_preds):
+            video_score = self.stat_fns[stat](video_label, frame_preds)
+            user_video_scores.append(video_score)
+
+        user_mean = np.mean(user_video_scores) # compute mean over target videos for current user
+        return user_video_scores, user_mean, self.get_confidence_interval(user_video_scores)
+
     def get_mean_stats(self, current_user=False):
+        #import pdb; pdb.set_trace()
         user_scores = { stat: [] for stat in self.stats_to_compute }
         video_scores = { stat: [] for stat in self.stats_to_compute }
 
@@ -149,16 +167,8 @@ class TestEvaluator(Evaluator):
         users_to_average = [self.current_user] if current_user else range(num_users)
         for stat in self.stats_to_compute:
             for user in users_to_average:
-                user_frame_preds = self.all_frame_predictions[user] # [ video_1_frame_predss, ..., video_N_frame_preds ]
-                user_video_labels = self.all_video_labels[user] # [ video_1_label, ..., video_N_label ]
+                user_video_scores, user_mean,_ = self.get_user_stats(user, stat)
 
-                # loop over target videos for current user
-                user_video_scores = []
-                for video_label, frame_preds in zip(user_video_labels, user_frame_preds):
-                    video_score = self.stat_fns[stat](video_label, frame_preds)
-                    user_video_scores.append(video_score)
-
-                user_mean = np.mean(user_video_scores) # compute mean over target videos for current user
                 user_scores[stat].append( user_mean ) # append mean over target videos for current user
                 video_scores[stat].extend( user_video_scores ) # accumulate list of video scores
 
@@ -166,9 +176,23 @@ class TestEvaluator(Evaluator):
         user_stats = self.average_over_scores(user_scores) # user_scores: [user_1_mean, ..., user_M_mean]
         # computes average score over all videos (pooled across users)
         video_stats = self.average_over_scores(video_scores) # video_scores: [user_1_video_1_mean, user_1_video_2_mean, ..., user_M_video_N_mean]
+
         return user_stats, video_stats
 
+    def save_user_stats_to_df(self, path):
+        num_users = self.current_user+1
+        users_to_average = range(num_users)
+        all_stat_rows = []
+        for stat in self.stats_to_compute:
+            for user in users_to_average:
+                user_video_scores, _, _ = self.get_user_stats(user, stat)
+                all_stat_rows = all_stat_rows + [[s, u, vid_score] for (s, u, vid_score) in zip(repeat(stat), repeat(user), user_video_scores)]
+        df = pd.DataFrame(all_stat_rows, columns=['stat', 'user', 'score'])
+        df.to_csv(path)
+        return df
+
     def average_over_scores(self, user_stats):
+        #import pdb; pdb.set_trace()
         mean_stats = {}
         for stat in self.stats_to_compute:
             user_means = user_stats[stat]
@@ -183,6 +207,7 @@ class TestEvaluator(Evaluator):
         self.all_frame_paths.append([])
 
     def append_video(self, frame_logits, video_label, frame_paths, object_list):
+        #import pdb; pdb.set_trace()
         # remove any duplicate frames added due to padding to a multiple of clip_length
         frame_paths, unique_idxs = np.unique(frame_paths, return_index=True)
         frame_logits = frame_logits[unique_idxs]
