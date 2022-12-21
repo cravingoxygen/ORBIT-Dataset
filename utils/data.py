@@ -11,6 +11,7 @@ import torchvision.transforms.functional as tv_F
 from torchvision.utils import save_image
 import matplotlib.pyplot as plt
 import matplotlib
+import random
 
 class DatasetFromClipPaths(Dataset):
     def __init__(self, clip_paths, with_labels):
@@ -125,7 +126,6 @@ def unpack_task(task_dict, device, context_to_device=True, target_to_device=Fals
     target_labels = task_dict['target_labels']
     target_annotations = task_dict['target_annotations']
     object_list = task_dict['object_list']
-
     if context_to_device and isinstance(context_labels, torch.Tensor):
         context_labels = context_labels.to(device)
     if target_to_device and isinstance(target_labels, torch.Tensor):
@@ -158,14 +158,15 @@ def process_annotations_dict(annotations_dict):
     return noise_tensor
 
 def handle_nan_annotations(annotations_dict):
+    new_dict = {}
     for key in annotations_dict.keys():
         not_nan_annotations = torch.nan_to_num(annotations_dict[key], nan=0.0)
         not_nan_annotations = not_nan_annotations.squeeze(dim=1).squeeze(dim=1)
-        annotations_dict[key] = not_nan_annotations
+        new_dict[key] = not_nan_annotations
     # Check that if we're using hand annotations, then all of the data must have a hand label
     if 'bad' in annotations_dict.keys():
-        assert (annotations_dict["bad"] + annotations_dict["medium"] + annotations_dict["good"]).sum() == annotations_dict["bad"].shape[0]
-    return annotations_dict
+        assert (new_dict["bad"] + new_dict["medium"] + new_dict["good"]).sum() == new_dict["bad"].shape[0]
+    return new_dict
 
 #keep_indices, "keep")
 
@@ -238,6 +239,36 @@ def sample_noisy_frames(context_clip_paths, annotations_dict, context_labels, ob
             
             # Save them out
             save_image(frame, output_dir + "/" + filename)
+
+
+def visualize_target_clips(target_clip_paths, target_labels, object_list, output_dir, num_frames_per_video=10):
+    num_rows = len(target_clip_paths) #Might have multiple videos per object type
+    num_cols = num_frames_per_video
+    f, axarr = plt.subplots(num_rows, num_cols, figsize=(num_cols+1,num_rows+1))
+    f.tight_layout()
+    plt.axis('off')
+    r, c = 0, 0
+    # For each video
+    for vid in target_clip_paths:
+        axarr[r][0].set_ylabel(object_list[target_labels[r]], rotation='vertical', size='large')
+        # Select a random sample of frames to save out
+        selected_frame_indices = random.sample(range(len(vid)), min(len(vid), num_frames_per_video))
+        for i in selected_frame_indices:
+            frame_path = vid[i]
+            user = frame_path.split('/')[-5]
+            image = Image.open(frame_path)
+            axarr[r,c].imshow(image, aspect='auto')
+            axarr[r,c].get_xaxis().set_ticks([])
+            axarr[r,c].get_yaxis().set_ticks([])
+            c += 1
+            if c == len(selected_frame_indices):
+                break
+        c = 0
+        r += 1
+
+    plt.subplots_adjust(wspace=0.01, hspace=0.3)
+    plt.savefig(os.path.join(output_dir, "{}_target.png".format(user)), bbox_inches='tight')
+    plt.close()
 
 
 gizmo_dict = {'blur_issue': 'b', 'framing_issue':'f', 'object_not_present_issue':'n', 'occlusion_issue':'o', 'overexposed_issue': '+', 'underexposed_issue': '-', 'viewpoint_issue': 'v', 'bad': 'B', 'medium': 'M', 'good': 'G'}

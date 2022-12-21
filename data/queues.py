@@ -11,7 +11,7 @@ class DatasetQueue:
     Class for a queue of tasks sampled from UserEpisodicORIBTDataset/ObjectEpisodicORBITDataset.
 
     """
-    def __init__(self, tasks_per_user, shuffle, test_mode, override_num_workers: Optional[int]=None):
+    def __init__(self, tasks_per_user, shuffle, test_mode, override_num_workers: Optional[int]=0):
         """
         Creates instance of DatasetQueue.
         :param tasks_per_user: (int) Number of tasks per user to add to the queue.
@@ -55,9 +55,11 @@ class DatasetQueue:
                 )
 
 class UserEpisodicDatasetQueue(DatasetQueue):
-    def __init__(self, root, way_method, object_cap, shot_method, shots, video_types, subsample_factor, num_clips, clip_length, preload_clips, frame_size, annotations_to_load, tasks_per_user, test_mode, with_cluster_labels, with_caps, shuffle):
+    def __init__(self, root, way_method, object_cap, shot_method, shots, video_types, subsample_factor, num_clips, clip_length, preload_clips, frame_size, annotations_to_load, tasks_per_user, \
+                    test_mode, with_cluster_labels, with_caps, shuffle, load_from_path, filter_task_by_saved_mask, generate_new_target_set):
         DatasetQueue.__init__(self, tasks_per_user, shuffle, test_mode)
-        self.dataset = UserEpisodicORBITDataset(root, way_method, object_cap, shot_method, shots, video_types, subsample_factor, num_clips, clip_length, preload_clips, frame_size, annotations_to_load, test_mode, with_cluster_labels, with_caps)
+        self.dataset = UserEpisodicORBITDataset(root, way_method, object_cap, shot_method, shots, video_types, subsample_factor, num_clips, clip_length, preload_clips, frame_size, \
+                    annotations_to_load, test_mode, with_cluster_labels, with_caps, load_from_path, filter_task_by_saved_mask, generate_new_target_set)
         self.num_users = self.dataset.num_users
 
 class ObjectEpisodicDatasetQueue(DatasetQueue):

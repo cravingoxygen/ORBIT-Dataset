@@ -45,7 +45,8 @@ class DataLoader():
                                         dataset_info['frame_size'],
                                         dataset_info['annotations_to_load'],
                                         dataset_info['test_tasks_per_user'],
-                                        test_mode=True)
+                                        test_mode=True,
+                                        load_from_path=None)
         if 'test' in mode:
             self.test_queue = self.config_user_centric_queue(
                                         os.path.join(dataset_info['data_path'], dataset_info['test_set']),
@@ -61,7 +62,10 @@ class DataLoader():
                                         dataset_info['frame_size'],
                                         dataset_info['annotations_to_load'],
                                         dataset_info['test_tasks_per_user'],
-                                        test_mode=True)
+                                        test_mode=True,
+                                        load_from_path=dataset_info['load_from_path'],
+                                        filter_task_by_saved_mask=dataset_info['filter_task_by_saved_mask'],
+                                        generate_new_target_set=dataset_info['generate_new_target_set'])
 
     def get_train_queue(self):
         return self.train_queue
@@ -74,10 +78,12 @@ class DataLoader():
     
     def config_user_centric_queue(self, root, way_method, object_cap, shot_method, shots, video_types, \
                             subsample_factor, num_clips, clip_length, preload_clips, frame_size, annotations_to_load, \
-                            tasks_per_user, test_mode=False, with_cluster_labels=False, with_caps=False, shuffle=False):
+                            tasks_per_user, test_mode=False, with_cluster_labels=False, with_caps=False, shuffle=False, \
+                            load_from_path=None, filter_task_by_saved_mask=False, generate_new_target_set=False):
         return UserEpisodicDatasetQueue(root, way_method, object_cap, shot_method, shots, video_types, \
                                 subsample_factor, num_clips, clip_length, preload_clips, frame_size, annotations_to_load, \
-                                tasks_per_user, test_mode, with_cluster_labels, with_caps, shuffle)
+                                tasks_per_user, test_mode, with_cluster_labels, with_caps, shuffle, \
+                                load_from_path, filter_task_by_saved_mask, generate_new_target_set)
     
     def config_object_centric_queue(self, root, way_method, object_cap, shot_method, shots, video_types, \
                             subsample_factor, num_clips, clip_length, preload_clips, frame_size, annotations_to_load, \

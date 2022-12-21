@@ -16,6 +16,17 @@ def parse_args(learner='default'):
     parser.add_argument("--data_path", required=True, help="Path to ORBIT root directory.")
     parser.add_argument("--test_set", default='test', choices=['validation', 'test'], 
                         help="Test on validation or test users.")
+    parser.add_argument("--load_from_path", default=None, type=str,
+                        help="Path to saved out tasks which will be used instead of sampling new tasks.")
+    parser.add_argument("--filter_task_by_saved_mask", action="store_true",
+                        help="If true and load_from_path is set, then use any specified drop filters that are saved out with the task being loaded")
+    parser.add_argument("--generate_new_target_set", action="store_true",
+                        help="If true and load_from_path is set, then instead of using the target set at load_from_path, a new target set will be generated with settings specified by args")
+    parser.add_argument("--save_out_tasks", action="store_true",
+                        help="If True, save out noisy detection tasks for transfer.")
+    parser.add_argument("--experiment_name", default=None, type=str,
+                        help="This will be used to name the checkpoint directory if specified; otherwise the checkpoint directory is the timestamp")
+
 
     # model parameters
     parser.add_argument("--model_path", "-m", default=None,
@@ -38,7 +49,7 @@ def parse_args(learner='default'):
                         help="Normalisation layer to use (default: basic).")
 
     # task parameters
-    parser.add_argument("--task_type", type=str, default="noisy_shots", choices=["noisy_shots", "none"],
+    parser.add_argument("--task_type", type=str, default="noisy_shots", choices=["noisy_shots", "test", "none"],
                         help="What LOO task we're doing (always in test mode)")
     parser.add_argument("--spread_constraint", choices=["by_class", "nonempty", "none"], default="none",
                         help="Spread coresets over classes (by_class) or by not allowing it to drop the last instance of a class (nonempty) or no constraint (none)")
@@ -47,6 +58,8 @@ def parse_args(learner='default'):
                         help="What method we're using to calculate importance of a point")
     parser.add_argument("--fraction_of_target_for_loo", type=float, default=1.0,
                         help="What fraction of the target set can be used for LOO importance calculations")
+    parser.add_argument("--random_drop_seed", type=int, default=12345, 
+                        help="Random seed used when selecting points to drop at random (different from other seed) (default: 12345).")
 
 
 
@@ -131,6 +144,7 @@ def parse_args(learner='default'):
         parser.add_argument("--inner_learning_rate", "--inner_lr", type=float, default=0.1,
                         help="Learning rate for inner loop (MAML) or fine-tuning (FineTuner) (default: 0.1).")
              
+
     args = parser.parse_args()
     args.preload_clips = not args.no_preload_clips
     verify_args(learner, args)
@@ -156,6 +170,10 @@ def verify_args(learner, args):
             args.feature_extractor = "{:}_84".format(args.feature_extractor)
         else:
             sys.exit('{:}error: --frame_size 84 not implemented for {:}{:}'.format(cred, args.feature_extractor, cend))
+
+    if args.filter_task_by_saved_mask:
+        if args.load_from_path is None:
+            sys.exit('{:}error: --filter_task_by_saved_mask cannot be applied if --load_from_path is not specified{:}'.format(cred, cend))
 
     if learner == 'gradient-learner':
         if args.with_lite:

@@ -11,6 +11,8 @@ from tqdm import tqdm
 from typing import Dict, List, Union
 from torch.utils.data import Dataset
 import torchvision.transforms.functional as tv_F
+import pickle
+
 
 class ORBITDataset(Dataset):
     """
@@ -52,7 +54,7 @@ class ORBITDataset(Dataset):
         self.with_caps = with_caps
         self.annotations_to_load = sorted(annotations_to_load)
         self.with_annotations = True if annotations_to_load else False
-        
+
         if self.with_annotations:
             self.annotation_dims = {'object_bounding_box': 4 }
             self.annotation_root = os.path.join(os.path.dirname(self.root),  "annotations", f"{self.mode}")       # e.g. /data/orbit_benchmark/annotations/{train,validation,test}
@@ -79,10 +81,10 @@ class ORBITDataset(Dataset):
         if self.with_cluster_labels:
             self.obj2cluster = []   # List of object id (int) to cluster id (int)
 
-        self.__load_all_users()        
-    
+        self.__load_all_users()
+
     def __load_all_users(self) -> None:
-        
+
         if self.with_cluster_labels: # setup clusters if we're using object clusters as labels.
             # Load cluster labels for this folder.
             cluster_label_path = os.path.join('data', f"orbit_{self.mode}_object_cluster_labels.json")
@@ -96,7 +98,7 @@ class ORBITDataset(Dataset):
 
             # We want a list where each object id corresponds to a specific cluster label
             cluster_id_map = self.get_label_map(cluster_classes) #TODO potentially might be an issue with filtering
-            
+
         obj_id, vid_id = 0, 0
         video_types = ['clean', 'clutter']
         for user in tqdm(sorted(os.listdir(self.root)), desc=f"Loading {self.mode} users from {self.root}"): # loop over users
@@ -114,11 +116,11 @@ class ORBITDataset(Dataset):
                         self.video2id[video_path] = vid_id
                         videos_by_type[video_type].append(video_path)
                         self.vid2frames[video_path] = [os.path.join(video_path, f) for f in sorted(os.listdir(video_path))]
-                        vid_id += 1 
+                        vid_id += 1
                         if self.with_annotations:
                             video_annotations = self.__load_video_annotations(video_name)
                             self.frame2anns.update(video_annotations)
-               
+
                 obj_ids.append(obj_id)
                 self.obj2vids.append(videos_by_type)
                 self.obj2name.append(obj_name)
@@ -129,11 +131,11 @@ class ORBITDataset(Dataset):
                     self.obj2cluster.append(obj_cluster)
 
             self.user2objs[user] = obj_ids
-        
+
         self.num_users = len(self.users)
         self.num_objects = len(self.obj2name)
         print(f"Loaded data summary: {self.num_users} users, {self.num_objects} objects, {len(self.video2id)} videos")
-    
+
     def __load_video_annotations(self, video_name: str) -> Dict[str, Dict[str, Union[bool, torch.Tensor]]]:
         annotation_path = os.path.join(self.annotation_root, f"{video_name}.json")
         with open(annotation_path, 'r') as annotation_file:
@@ -141,9 +143,9 @@ class ORBITDataset(Dataset):
 
         if 'object_bounding_box' in self.annotations_to_load:
             video_annotations = self.__preprocess_bounding_boxes(video_annotations)
-        
+
         return video_annotations
-    
+
     def __preprocess_bounding_boxes(self, video_annotations: Dict[str, Dict[str, Union[bool, torch.Tensor]]]) -> Dict[str, Dict[str, Union[bool, torch.Tensor]]]:
 
         for frame_id, annotation_dict in video_annotations.items():
@@ -161,6 +163,14 @@ class ORBITDataset(Dataset):
 
     def __len__(self):
         return self.num_users
+
+
+    def name2obj(self, name):
+        for obj_id, obj_name in enumerate(self.obj2name):
+            if obj_name == name:
+                return obj_id
+        return -1
+
 
     def get_user_objects(self, user):
         return self.user2objs[ self.users[user] ]
@@ -237,7 +247,7 @@ class ORBITDataset(Dataset):
             if self.preload_clips:
                 sampled_clips = self.load_clips(sampled_paths)
                 clips += sampled_clips
-            
+
             if self.with_annotations:
                 sampled_annotations = self.load_annotations(sampled_paths)
                 annotations = self.extend_ann_dict(annotations, sampled_annotations)
@@ -245,7 +255,7 @@ class ORBITDataset(Dataset):
             video_ids.extend([self.video2id[video_path]] * len(sampled_paths))
 
         return clips, paths, video_ids, annotations
-    
+
     def extend_ann_dict(self, dest_dict, src_dict):
         """
         Function to extend all lists within annotation dictionary.
@@ -274,7 +284,7 @@ class ORBITDataset(Dataset):
                 loaded_clips[clip_idx, frame_idx] = self.load_and_transform_frame(frame_path)
 
         return loaded_clips
-    
+
     def load_annotations(self, paths: np.ndarray) -> torch.Tensor:
         """
         Function to load frame annotations, arrange in clips, from disk.
@@ -350,7 +360,7 @@ class ORBITDataset(Dataset):
             raise ValueError(f"num_clips should be 'max' or 'random', but was {num_clips}")
 
         return sampled_paths # shape (num_clips, clip_length)
-   
+
     def prepare_set(self, clips, paths, labels, annotations, video_ids, test_mode=False):
         """
         Function to prepare context/target set for a task.
@@ -382,7 +392,7 @@ class ORBITDataset(Dataset):
                 video_label = labels[idxs][0]
                 labels_by_video.append(video_label)
                 # get all frame annotations for current video
-                video_anns = { ann : annotations[ann][idxs].flatten(end_dim=1) for ann in self.annotations_to_load } if self.with_annotations else None 
+                video_anns = { ann : annotations[ann][idxs].flatten(end_dim=1) for ann in self.annotations_to_load } if self.with_annotations else None
                 annotations_by_video.append(video_anns)
             return frames_by_video, paths_by_video, labels_by_video, annotations_by_video
         else:
@@ -450,9 +460,15 @@ class ORBITDataset(Dataset):
         for obj in selected_objects:
             label = label_map[obj]
             obj_name = self.obj2name[obj]
+            # This is a list of string object names
             obj_list.append(obj_name)
 
+            # These are literally just the string names of the videos chosen to sample clips from
             context_videos, target_videos = self.sample_videos(self.obj2vids[obj])
+            # cc = list of clips, shape [clip_length, channels, width x height]
+            # cp = list of array of frame paths, each selected clip has its own array of frame paths <- This is what we have saved out. We are going to need to override this with our own method
+            # cvi = list of video indices, each video index tells us where a particular clip came from
+            # ca = dictionary of annotations, each issue type maps to a list of 0/1 tensors corresponding to a clip
             cc, cp, cvi, ca = self.sample_clips_from_videos(context_videos, self.context_num_clips)
             context_clips.extend(cc)
             context_paths.extend(cp)
@@ -471,7 +487,6 @@ class ORBITDataset(Dataset):
         context_clips, context_paths, context_labels, context_annotations = self.prepare_set(context_clips, context_paths, context_labels, context_annotations, context_video_ids)
         if with_target_set:
             target_clips, target_paths, target_labels, target_annotations = self.prepare_set(target_clips, target_paths, target_labels, target_annotations, target_video_ids, test_mode=self.test_mode)
-
         task_dict = {
             # Data required for train / test
             'context_clips': context_clips,                                     # Tensor of shape (num_context_clips, clip_length, channels, height, width), dtype float32
@@ -492,7 +507,8 @@ class UserEpisodicORBITDataset(ORBITDataset):
     """
     Class for user-centric episodic sampling of ORBIT dataset.
     """
-    def __init__(self, root, way_method, object_cap, shot_methods, shots, video_types, subsample_factor, num_clips, clip_length, preload_clips, frame_size, annotations_to_load, test_mode, with_cluster_labels, with_caps):
+    def __init__(self, root, way_method, object_cap, shot_methods, shots, video_types, subsample_factor, num_clips, clip_length, preload_clips, frame_size, annotations_to_load, \
+                    test_mode, with_cluster_labels, with_caps, load_from_path=None, filter_task_by_saved_mask=False, generate_new_target_set=False):
         """
         Creates instance of UserEpisodicORBITDataset.
         :param root: (str) Path to train/validation/test folder in ORBIT dataset root folder.
@@ -512,19 +528,132 @@ class UserEpisodicORBITDataset(ORBITDataset):
         :param with_caps: (bool) If True, impose caps on the number of videos per object, otherwise leave uncapped.
         :return: Nothing.
         """
+
+        # preload first task
+        self.task_path = None
+        self.task_counter = 0
+        self.filter_task_by_saved_mask = filter_task_by_saved_mask
+        self.generate_new_target_set = generate_new_target_set
+        if load_from_path is not None:
+            self.task_name_pattern = "task_{}.pickle"
+            self.task_path = load_from_path
+            print("Loading tasks from {}".format(load_from_path))
+            assert os.path.exists(load_from_path)
         ORBITDataset.__init__(self, root, way_method, object_cap, shot_methods, shots, video_types, subsample_factor, num_clips, clip_length, preload_clips, frame_size, annotations_to_load, test_mode, with_cluster_labels, with_caps)
+
+    # The path list will be grouped by video for target but not for context
+    def load_context_clips_from_videos(self, clip_paths):
+        clips = self.load_clips(clip_paths)
+        return clips
+
+    def load_target_clips_from_videos(self, clip_paths_per_vid):
+        clips = []
+        for vid_clip_paths in clip_paths_per_vid:
+            if self.preload_clips:
+                sampled_clips = self.load_clips(np.expand_dims(vid_clip_paths, 1)).squeeze()
+                clips.append(sampled_clips)
+        return clips
+
+    # Given a task, sample a different target set (which may be clean or clutter, as specified in args, NOT by task)
+    # Sampled task might not actually be different, depending on args and task
+    def sample_different_target(self, object_list):
+        target_clips = []
+        target_paths = []
+        target_labels = []
+        target_video_ids = []
+        target_annotations = { ann : [] for ann in self.annotations_to_load}
+
+        for i, obj_name in enumerate(object_list):
+            obj = self.name2obj(obj_name)
+            label = i
+            # obj_id and label might not match; when originally sampled, the order of objects is random and the labels are then assigned based on this sample
+            # i.e. whatever object is first in the sample, will be label 0, etc.
+            #assert label == obj
+            object_videos = self.obj2vids[obj]
+            if self.target_type == 'clean':
+                # Although we aren't sampling context vids, we want to use the same split spec as was used to generate the current task
+                num_context_avail = len(object_videos['clean'])
+                split = min(5, num_context_avail-1) # minimum of 5 context, unless not enough then leave at least 1 target video and use remaining as context
+                target_videos = self.choose_videos(object_videos['clean'][split:], self.shot_target, self.shot_method_target, self.target_shot_cap)
+            else:
+                target_videos = self.choose_videos(object_videos['clutter'], self.shot_target, self.shot_method_target, self.target_shot_cap)
+
+            tc, tp, tvi, ta = self.sample_clips_from_videos(target_videos, self.target_num_clips)
+            target_clips.extend(tc)
+            target_paths.extend(tp)
+            target_labels.extend([label for _ in range(len(tp))])
+            target_video_ids.extend(tvi)
+            target_annotations = self.extend_ann_dict(target_annotations, ta)
+
+        target_clips, target_paths, target_labels, target_annotations = self.prepare_set(target_clips, target_paths, target_labels, target_annotations, target_video_ids, test_mode=self.test_mode)
+        return target_clips, target_paths, target_labels, target_annotations
+
 
     def __getitem__(self, index):
         """
         Function to get a user-centric task as a set of (context and target) clips and labels.
         :param index: (tuple) Task ID and whether to load task target set.
+        Note: Task ID here is not actually a task id at all, it's just the user id for the current task.
         :return: (dict) Context and target set data for task.
         """
+        user_num, with_target_set = index
+        task_id = self.task_counter
+        # We expect task_id to be in range [user_num*tasks_per_user, (user_num+1)*tasks_per_user)
+        self.task_counter += 1
+        # No task path specified; sample a task to return
+        if self.task_path is None:
+            user = self.users[user_num] # get user (each task == user id) # presumably this wraps around?
+            user_objects = self.user2objs[user] # get user's objects
+            return super().sample_task(user_objects, with_target_set, user)
 
-        task_id, with_target_set = index
-        user = self.users[task_id] # get user (each task == user id)
-        user_objects = self.user2objs[user] # get user's objects
-        return self.sample_task(user_objects, with_target_set, user)
+        # Otherwise, load the task with the current task_id from the specified location
+        with open(os.path.join(self.task_path, self.task_name_pattern.format(task_id)), "rb") as task_file:
+            print("Loading {}".format(os.path.join(self.task_path, self.task_name_pattern.format(task_id))))
+            task_dict = pickle.load(task_file)
+
+        # If filtering by saved_mask, then we now need to apply the mask to the dictionary's context set
+        if self.filter_task_by_saved_mask:
+            task_dict['context_paths'] = task_dict['context_paths'][task_dict['keep_mask']]
+            task_dict['context_labels'] = task_dict['context_labels'][task_dict['keep_mask']]
+            for annot in task_dict['context_annotations'].keys():
+                task_dict['context_annotations'][annot] = task_dict['context_annotations'][annot][task_dict['keep_mask']]
+        # We don't need to call prepare set, since everything except the clips are already in the right formats/shapes/etc
+        # The only thing we need to do is to convert the clips to torch:
+        context_clips = self.load_context_clips_from_videos(task_dict["context_paths"])
+        task_dict["context_clips"] = context_clips #torch.stack(context_clips) if self.preload_clips else torch.tensor(context_clips)
+
+        if not with_target_set:
+            task_dict["target_clips"] = []
+        elif not self.generate_new_target_set:
+            # If we want to transfer the exact task:
+            target_clips = self.load_target_clips_from_videos(task_dict["target_paths"])
+            task_dict["target_clips"] = target_clips
+            #task_dict["target_clips"] = torch.stack(target_clips) if self preload_clips else torch tensor(target_clips)
+        else:
+            # Else, if we want to evaluate on a different target set:
+            task_dict["orig_target_paths"] = task_dict["target_paths"]
+            task_dict["orig_target_labels"] = task_dict["target_labels"]
+            task_dict["orig_target_annotations"] = task_dict["target_annotations"]
+            task_dict["target_clips"], task_dict["target_paths"], task_dict["target_labels"], task_dict["target_annotations"] = self.sample_different_target(task_dict["object_list"])
+
+            # Double check that we haven't messed up the labeling object order
+            # For each label in the new target set (there may be doubles)
+            for i in range(len(task_dict["target_labels"])):
+                # Find the video's object type usnig the path to its first frame (assume no frame mixing, at this point everything is split by video)
+                obj_name = self.infer_object_type_from_path(task_dict["target_paths"][i][0], task_dict["object_list"])
+                # For each original video path with the same label as this video, make sure it has the same obj_name
+                for j, label in enumerate(task_dict["orig_target_labels"]):
+                    if label == task_dict["target_labels"][i]:
+                        assert obj_name in task_dict["orig_target_paths"][j][0]
+
+        # At this point, the target_paths might not match the orig_target_paths, because the latter have already filtered out the object-not_present_issues
+        return task_dict
+
+    def infer_object_type_from_path(self, path, object_list):
+        for obj_name in object_list:
+            if obj_name in path:
+                return obj_name
+        return None
 
 class ObjectEpisodicORBITDataset(ORBITDataset):
     """
